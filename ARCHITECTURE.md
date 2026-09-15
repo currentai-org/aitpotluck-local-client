@@ -353,6 +353,43 @@ this environment. Everything downstream of `ensure_python()` returning a
 valid interpreter path is the exact same code already tested end-to-end on
 Linux.
 
+## 4.8 Public one-line installer layer
+
+Two thin bootstrap scripts at the repo root, meant to be posted publicly
+and piped into a shell (`curl ... | bash`, `irm ... | iex`):
+
+- `install.sh` (Linux/macOS): checks for `git`, clones (or updates an
+  existing checkout of) the repo into `~/.aipotluck/src`, then execs
+  `python3 -m installer.install` with any passed-through arguments. Python
+  presence is not checked here -- that's `installer/install.py`'s job via
+  `python_bootstrap.ensure_python()`, which already has the right
+  per-OS messaging.
+- `install.ps1` (Windows, repo root -- distinct from
+  `packaging/windows/install.ps1`): checks for `git` (installing it via
+  winget if missing, mirroring the Python auto-install pattern), clones
+  into `%LOCALAPPDATA%\aipotluck\src`, then hands off to
+  `packaging/windows/install.ps1` (the one that finds-or-installs Python).
+
+Both scripts contain a placeholder repo URL (`REPLACE_ME`) and refuse to
+run until it's replaced with the real public clone URL or overridden via
+`AIPOTLUCK_REPO_URL` -- there is no hosted URL yet for this project, so
+this is documented as a manual step for whoever publishes it (see
+README.md's "One-line public installer" section for exact end-user
+usage once that happens).
+
+No installer logic is duplicated in either bootstrap script -- both are
+strictly "get the source, then call the already-tested installer,"
+consistent with every other layer in this project reusing rather than
+reimplementing.
+
+Verified end-to-end on this Linux/arm64 dev host using a local bare git
+repo as a stand-in "public" remote (`file://` URL via
+`AIPOTLUCK_REPO_URL`): fresh clone with submodule init, re-run against an
+existing checkout (updates via fetch + reset --hard rather than
+re-cloning), and the placeholder-URL guard correctly refusing to run
+without an override. The Windows `install.ps1` (repo root) is untested
+like the rest of the Windows surface (no Windows host available).
+
 ## 5. Open questions before implementation
 
 Resolved during implementation:

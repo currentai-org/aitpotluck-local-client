@@ -47,7 +47,55 @@ cd aipotluck-local-client
 powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
 ```
 
-Options (Python installer; the PowerShell wrapper exposes the equivalent
+## One-line public installer (once this repo is hosted publicly)
+
+`install.sh` (Linux/macOS) and `install.ps1` (Windows) at the repo root are
+thin bootstrap wrappers meant to be posted publicly and piped straight into
+a shell -- no manual `git clone` step required. **They currently ship with
+a placeholder repo URL** (`REPLACE_ME`) and refuse to run until that's
+replaced with the real hosted URL, or overridden via environment
+variable/parameter. Once the repo has a public home (e.g. pushed to
+GitHub), usage looks like:
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | bash
+
+# with installer flags:
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | bash -s -- --backend cuda --model-hf "org/repo:Q4_K_M"
+
+# pointing at a fork/branch instead of editing the script:
+AIPOTLUCK_REPO_URL=https://github.com/<owner>/<repo>.git AIPOTLUCK_REF=main \
+  curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | bash
+```
+
+```powershell
+# Windows, no arguments:
+irm https://raw.githubusercontent.com/<owner>/<repo>/main/install.ps1 | iex
+
+# Windows, with arguments (irm|iex can't take params directly, use this form):
+$script = irm https://raw.githubusercontent.com/<owner>/<repo>/main/install.ps1
+Invoke-Expression "& { $script } -Backend cuda -System"
+```
+
+Both scripts do the minimum work themselves (clone the repo -- installing
+`git` via winget first on Windows if it's missing -- into
+`~/.aipotluck/src` / `%LOCALAPPDATA%\aipotluck\src`) and then hand off
+immediately to the already-implemented, already-tested installer
+(`installer/install.py` on Linux/macOS, `packaging/windows/install.ps1` on
+Windows, which itself finds-or-installs Python before calling
+`installer/install.py`). No installer logic is duplicated in the
+one-liners themselves. Re-running either script updates the existing
+checkout (`git fetch` + `reset --hard`) rather than re-cloning.
+
+To actually publish this: push the repo to its public home, then replace
+`REPLACE_ME` in both `install.sh` (`DEFAULT_REPO_URL`) and `install.ps1`
+(`$DefaultRepoUrl`) with the real clone URL, and swap `<owner>/<repo>` in
+the raw.githubusercontent.com URLs above.
+
+## Installer options
+
+The Python installer's flags (the PowerShell wrapper exposes the equivalent
 `-System`/`-Backend`/`-ModelHf`/`-Tag`/`-NoStart`/`-Verbose` flags):
 
 ```
@@ -89,6 +137,8 @@ After install, the service:
 ```
 vendor/llama.cpp/              git submodule, pinned commit (reference + docs)
 llama_version.json             pinned release tag + per-platform asset checksums
+install.sh                     public one-line installer entry point (Linux/macOS)
+install.ps1                    public one-line installer entry point (Windows)
 installer/
   install.py                    installer CLI entry point
   platform_detect.py             OS/arch/GPU-backend detection
