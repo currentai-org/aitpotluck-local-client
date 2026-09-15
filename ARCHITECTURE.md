@@ -235,26 +235,63 @@ now:
   with the transport layer.
 - Structured logging to the per-OS log dir from section 3.3.
 
+## 4.5 The "always running" supervision layer (implemented)
+
+`service/llama_supervisor.py` implements `LlamaSupervisor`, used by
+`service/aipotluck_service.py`:
+
+- On service start, spawns `llama-server` with args built from
+  `runtime.json` (`--host`, `--port`, `--model`/`-hf`, `--ctx-size`,
+  `--gpu-layers`).
+- Polls `GET /health` on llama-server every 5s (`HEALTH_POLL_INTERVAL_SECONDS`).
+- On crash (process exit), restarts with exponential backoff
+  (1/2/5/10/20/30/60s), resetting to the start of the schedule if the
+  process had stayed up 2+ minutes (`STABLE_UPTIME_RESET_SECONDS`) --
+  avoids hammering restarts on a persistently broken config while still
+  recovering fast from transient crashes.
+- On service shutdown (SIGTERM/SIGINT), terminates llama-server gracefully
+  (SIGTERM, 15s grace period, then SIGKILL) before exiting.
+- Exposes live state via `LlamaProcessInfo` (pid, running, healthy,
+  restart_count, last_exit_code) surfaced at `GET /status` on the aipotluck
+  service's own HTTP endpoint (port 8765).
+
+Two-tier self-healing, confirmed by test:
+1. systemd `Restart=always` / launchd `KeepAlive` / Windows Service restarts
+   `aipotluck_service.py` itself if it dies.
+2. `LlamaSupervisor` inside that process restarts just `llama-server` if
+   *it* dies, without needing to restart the whole Python service.
+
+Verified end-to-end on this repo's Linux/arm64 dev host: real model
+download via llama-server's own `-hf` fetcher (bartowski/Qwen2.5-0.5B
+default placeholder), health-check transition to healthy, live inference
+request, `kill -9` on the llama-server child recovered automatically
+(new pid, `restart_count` incremented, healthy again ~35s later), and
+clean shutdown terminates both processes with no orphans.
+
 ## 5. Open questions before implementation
 
-1. Default install scope: **per-user (no admin), autostart at login** vs
-   requiring `--system` explicitly for boot-time/no-login start? (Recommend
-   per-user default, `--system` opt-in — matches "reduce friction.")
-2. Should the installer also launch `llama-server` directly as a foreground
-   process the first time (quick "does it work" smoke test), separate from
-   the persistent Python service?
-3. GPU backend default: auto-detect and pick best (cuda/rocm/vulkan/cpu), or
-   always default to plain CPU asset and require an explicit `--backend`
-   flag for GPU builds? (Recommend auto-detect with CPU as safe fallback.)
-4. Language/tooling for the installer itself: plain stdlib Python (most
-   portable, matches "blank python service" ask) vs. a compiled Go/Rust
-   binary wrapper for a nicer double-click UX later? (Recommend stdlib
-   Python now; packaging/ dir above is where a future native wrapper would
-   slot in without touching this logic.)
-5. Default model: none bundled — first run requires user to point at a GGUF
-   or we offer an optional `-hf <repo>:<quant>` passthrough to
-   `llama-server`'s own Hugging Face fetcher (it already supports this
-   natively, so we don't need to reimplement model discovery).
+Resolved during implementation:
+
+1. Default install scope: **per-user (no admin), autostart at login** --
+   implemented as the default; `--system` is opt-in on all three OS
+   backends.
+3. GPU backend default: **auto-detect with CPU fallback** -- implemented in
+   `platform_detect.detect_gpu_backend`; unknown/unsupported asset
+   combinations (e.g. no linux-arm64-cuda release) fall back to the CPU
+   asset automatically (`fetch.resolve_asset`).
+4. Installer language: **stdlib Python**, confirmed sufficient; no native
+   wrapper needed yet.
+5. Default model: **no bundled model** -- defaults to a small placeholder
+   (`bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M`) fetched via
+   llama-server's own `-hf` flag so the service has something to supervise
+   out of the box; `--model-hf` / `--model-path` override for real use.
+
+Still open:
+
+2. Should the installer also do a foreground smoke-test run of
+   `llama-server` before handing off to the service, separate from the
+   supervised background process? (Not implemented -- the supervisor's own
+   health-poll-until-healthy on startup serves this purpose today.)
 
 ## 6. Non-goals for this phase
 

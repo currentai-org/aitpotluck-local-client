@@ -33,6 +33,7 @@ log = logging.getLogger("aipotluck.installer")
 SERVICE_NAME = "aipotluck"
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 8080
+DEFAULT_MODEL_HF = "bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -69,6 +70,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Install method. Only 'direct' (our own download+verify) is "
              "implemented; 'brew'/'winget' passthroughs are future work.",
     )
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument(
+        "--model-hf", default=DEFAULT_MODEL_HF,
+        help="Hugging Face repo[:quant] passed straight to llama-server's "
+             "own -hf downloader, e.g. 'bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M' "
+             f"(default: {DEFAULT_MODEL_HF} -- a small placeholder model so the "
+             "service has something to supervise out of the box; override for real use)",
+    )
+    model_group.add_argument(
+        "--model-path", type=Path, default=None,
+        help="Path to a local GGUF file, instead of fetching from Hugging Face",
+    )
+    parser.add_argument("--ctx-size", type=int, default=4096, help="llama-server context size (-c)")
+    parser.add_argument(
+        "--gpu-layers", default="auto",
+        help="llama-server -ngl value: an integer, 'auto', or 'all' (default: auto)",
+    )
+    parser.add_argument("--server-host", default=DEFAULT_SERVER_HOST, help="llama-server bind host")
+    parser.add_argument("--server-port", type=int, default=DEFAULT_SERVER_PORT, help="llama-server bind port")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -112,8 +132,12 @@ def run_install(args: argparse.Namespace) -> int:
             "install_dir": str(llama_dir),
             "server_binary": str(server_bin),
             "lib_dir": str(server_bin.parent),
-            "default_host": DEFAULT_SERVER_HOST,
-            "default_port": DEFAULT_SERVER_PORT,
+            "host": args.server_host,
+            "port": args.server_port,
+            "ctx_size": args.ctx_size,
+            "gpu_layers": args.gpu_layers,
+            "model_hf": args.model_hf if args.model_path is None else None,
+            "model_path": str(args.model_path) if args.model_path else None,
         },
         "service": {
             "name": SERVICE_NAME,
@@ -172,7 +196,10 @@ def _print_summary(profile: HostProfile, lay: layout.Layout, runtime_config: dic
     print(f"Logs:           {lay.log_dir}")
     if service_status is not None:
         print(f"Service:        {service_status.state.value} ({service_status.detail})")
-        print(f"  health check: http://127.0.0.1:8765/healthz")
+        print(f"  service health:  http://127.0.0.1:8765/healthz")
+        print(f"  service status:  http://127.0.0.1:8765/status")
+        llama = runtime_config["llama_cpp"]
+        print(f"  llama-server:    http://{llama['host']}:{llama['port']}/health (managed by the service)")
     else:
         print("Service:        not installed (--no-service)")
     print("=" * 60)

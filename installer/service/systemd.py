@@ -18,11 +18,12 @@ SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
 UNIT_TEMPLATE = """[Unit]
 Description=aipotluck local inference client service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart={exec_line}
-Restart=on-failure
+Restart=always
 RestartSec=3
 {working_dir_line}{log_lines}
 [Install]
