@@ -4,7 +4,8 @@ Cross-platform installer and local inference server wrapper. Wraps
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (pinned as a git
 submodule at `vendor/llama.cpp` for reference/docs; the installer itself
 downloads prebuilt release binaries rather than building from source) and
-installs a small companion Python system service.
+installs a small companion Python service that keeps `llama-server`
+running at all times.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale.
 
@@ -13,21 +14,41 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale.
 - Linux: implemented and tested (systemd --user service backend, live
   llama-server supervision with crash-restart, verified end-to-end with a
   real model download and inference request).
-- macOS: stubbed, implemented per Apple docs, **untested** (no macOS host
-  available in this environment). See `installer/service/launchd.py`.
-- Windows: stubbed, implemented per documented schtasks/pywin32 conventions,
-  **untested** (no Windows host available). See
-  `installer/service/windows_service.py`.
+- macOS: implemented per Apple's documented launchd/plist conventions,
+  reusing the identical, already-tested service payload. **Untested** (no
+  macOS host available in this environment). See
+  `installer/service/launchd.py`, `packaging/macos/README.md`.
+- Windows: implemented per documented winget/schtasks/pywin32 conventions,
+  including a PowerShell bootstrapper (`packaging/windows/install.ps1`)
+  that installs Python itself via winget if none is found, plus a real
+  pywin32 Windows Service host for the `--system` path. **Untested** (no
+  Windows host available). See `installer/service/windows_service.py`,
+  `service/windows_service_host.py`, `installer/python_bootstrap.py`,
+  `packaging/windows/README.md`.
 
-## Quick start (Linux)
+All three OS backends drive the exact same portable service payload
+(`service/runner.py` -> `service/llama_supervisor.py`) -- only the
+OS-native "keep this process running" registration differs (systemd unit /
+launchd plist / Scheduled Task or Windows Service).
 
+## Quick start
+
+Linux / macOS:
 ```bash
 git clone --recurse-submodules <this-repo>
 cd aipotluck-local-client
 python3 -m installer.install --backend auto
 ```
 
-Options:
+Windows (no prerequisites, installs Python itself if missing):
+```powershell
+git clone --recurse-submodules <this-repo>
+cd aipotluck-local-client
+powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
+```
+
+Options (Python installer; the PowerShell wrapper exposes the equivalent
+`-System`/`-Backend`/`-ModelHf`/`-Tag`/`-NoStart`/`-Verbose` flags):
 
 ```
 --tag TAG             Override the pinned llama.cpp release tag
@@ -55,10 +76,10 @@ After install, the service:
   exponential backoff (1s, 2s, 5s, 10s, 20s, 30s, 60s -- resets if the
   process stayed up 2+ minutes). On service shutdown, llama-server is
   terminated cleanly (SIGTERM, then SIGKILL after 15s if unresponsive).
-- Two-tier self-healing: systemd/launchd/Windows Service restarts the
-  Python service process itself if it dies; the Python service's
-  `LlamaSupervisor` restarts just `llama-server` if it crashes. Between the
-  two, llama-server should stay running continuously.
+- Two-tier self-healing: systemd/launchd/Scheduled Task/Windows Service
+  restarts the Python service process itself if it dies; the Python
+  service's `LlamaSupervisor` restarts just `llama-server` if it crashes.
+  Between the two, llama-server should stay running continuously.
 
 `llama-server`'s own OpenAI-compatible API is reachable directly at
 `http://127.0.0.1:8080` (or whatever `--server-host`/`--server-port` you set).
@@ -66,10 +87,26 @@ After install, the service:
 ## Repo layout
 
 ```
-vendor/llama.cpp/        git submodule, pinned commit (reference + docs)
-llama_version.json        pinned release tag + per-platform asset checksums
-installer/                installer package (detection, fetch, layout, service backends)
-service/aipotluck_service.py   the blank companion Python service
-packaging/                 placeholders for future native installers (.deb/.pkg/.msi)
-ARCHITECTURE.md            full design doc
+vendor/llama.cpp/              git submodule, pinned commit (reference + docs)
+llama_version.json             pinned release tag + per-platform asset checksums
+installer/
+  install.py                    installer CLI entry point
+  platform_detect.py             OS/arch/GPU-backend detection
+  fetch.py                       download+checksum+extract llama.cpp releases
+  layout.py                      per-OS install paths
+  python_bootstrap.py            find/install a suitable Python (Windows: via winget)
+  service/
+    base.py                       ServiceManager ABC
+    systemd.py                    Linux (tested)
+    launchd.py                    macOS (stub, untested)
+    windows_service.py            Windows: schtasks (no-admin) + pywin32 (--system)
+service/
+  runner.py                       portable AipotluckServiceRunner (HTTP status + supervisor)
+  llama_supervisor.py             LlamaSupervisor: starts/restarts/health-polls llama-server
+  aipotluck_service.py            CLI entry point (systemd/launchd/schtasks invoke this directly)
+  windows_service_host.py         pywin32 ServiceFramework wrapping the same runner
+packaging/
+  windows/install.ps1             Windows bootstrapper (installs Python if missing, then installs)
+  windows|macos|linux/README.md   per-OS implementation notes
+ARCHITECTURE.md                  full design doc
 ```

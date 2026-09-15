@@ -268,6 +268,91 @@ request, `kill -9` on the llama-server child recovered automatically
 (new pid, `restart_count` incremented, healthy again ~35s later), and
 clean shutdown terminates both processes with no orphans.
 
+## 4.6 Portability refactor: one service payload, three OS wrappers
+
+To maximize code reuse across Linux/macOS/Windows, the service logic was
+split into a layered, OS-agnostic core plus thin OS-specific entry points:
+
+```
+service/llama_supervisor.py   -- OS-agnostic: subprocess.Popen + polling (stdlib only)
+service/runner.py             -- OS-agnostic: AipotluckServiceRunner
+                                  (HTTP status server + supervisor lifecycle,
+                                  exposes start()/stop()/wait(), no signal
+                                  handling, no service-framework imports)
+service/aipotluck_service.py  -- thin CLI wrapper: argparse + signal handlers
+                                  around AipotluckServiceRunner. This exact
+                                  script is what systemd, launchd, AND the
+                                  Windows Scheduled Task (no-admin default)
+                                  all invoke identically.
+service/windows_service_host.py -- pywin32 ServiceFramework wrapper around
+                                  the same AipotluckServiceRunner, used only
+                                  for the Windows --system path (a true
+                                  Windows Service needs SCM callbacks
+                                  (SvcDoRun/SvcStop) instead of Unix signals)
+```
+
+This means ~95% of the runtime logic (HTTP status endpoint, llama-server
+spawn/health-poll/restart-with-backoff, clean shutdown) is identical
+bytecode across all three OSes and all four service-registration
+mechanisms (systemd unit, launchd plist, Scheduled Task, Windows Service).
+Only the "how does this OS keep the wrapping process alive" layer differs,
+which is inherently OS-specific and was already isolated in
+`installer/service/{systemd,launchd,windows_service}.py`.
+
+A real bug was caught and fixed during the original Linux implementation
+that motivated splitting the HTTP server onto its own thread in
+`runner.py`: calling `http.server`'s `shutdown()` synchronously from a
+signal handler running on the same thread as `serve_forever()` deadlocks
+(the shutdown call blocks waiting for the serve loop to notice, but the
+serve loop can't proceed until the signal handler returns). Moving the
+HTTP server to its own thread means `stop()` can call `shutdown()`
+directly and safely from any thread (a signal handler, a pywin32 SvcStop
+callback, whatever) without that hazard.
+
+## 4.7 Windows: bootstrapping Python itself
+
+Explicit product requirement: **the Windows installer must check for
+Python and install it if missing**, since unlike Linux/macOS, a stock
+Windows machine commonly has no Python at all, and the installer itself is
+Python.
+
+Two cooperating pieces:
+
+- `installer/python_bootstrap.py` (`find_python()` / `ensure_python()`):
+  pure-Python, cross-platform version-checking logic. On Windows, if no
+  interpreter >= 3.9 is found, it shells out to
+  `winget install --id Python.Python.3.12 -e --silent
+  --accept-package-agreements --accept-source-agreements`, then re-resolves
+  by probing `%LOCALAPPDATA%\Programs\Python\` and `%ProgramFiles%`
+  directly (winget does not refresh the current process's PATH). Raises a
+  clear, actionable `PythonNotFoundError` with manual-install instructions
+  if winget itself is unavailable or fails. On macOS/Linux, `ensure_python`
+  only detects and raises an actionable brew/apt/dnf message -- no
+  sudo-gated auto-install on those platforms, since they ship Python by
+  default in practice.
+- `packaging/windows/install.ps1`: the *true* zero-prerequisite Windows
+  entry point, since `python -m installer.install` can't run at all
+  without Python already present. Plain PowerShell (no dependencies),
+  mirrors the exact same find-or-winget-install logic, then hands off to
+  `python -m installer.install` with equivalent flags. This is what a
+  Windows user (or a future signed .exe wrapper) actually runs first.
+
+`installer/install.py`'s service-registration step also calls
+`ensure_python()` itself (not just the PS1 script) before writing the
+service's `ExecStart`/`ProgramArguments`/schtasks command line -- so the
+service always points at a *validated* interpreter path, not a blindly
+trusted `sys.executable`, which matters most on Windows where the
+resolved python.exe may have just been installed by winget in this same
+run.
+
+STUB STATUS for this whole section: written against documented winget
+CLI behavior (`winget install`, silent flags, package ID
+`Python.Python.3.12`) and pywin32's public API surface, but **not
+exercised on real Windows hardware** -- no Windows host is available in
+this environment. Everything downstream of `ensure_python()` returning a
+valid interpreter path is the exact same code already tested end-to-end on
+Linux.
+
 ## 5. Open questions before implementation
 
 Resolved during implementation:

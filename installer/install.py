@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from installer import fetch, layout
 from installer.platform_detect import HostProfile, detect_host_profile
+from installer.python_bootstrap import PythonNotFoundError, ensure_python
 from installer.service.base import ServiceState, get_service_manager
 
 log = logging.getLogger("aipotluck.installer")
@@ -160,9 +161,15 @@ def run_install(args: argparse.Namespace) -> int:
         "--config-dir", str(lay.config_dir),
         "--log-dir", str(lay.log_dir),
     ]
+    try:
+        python_exe = ensure_python()
+    except PythonNotFoundError as exc:
+        log.error("%s", exc)
+        raise
+    log.info("Using Python interpreter for service: %s", python_exe)
     service_mgr.install(
         SERVICE_NAME,
-        exec_path=Path(sys.executable),
+        exec_path=python_exe,
         args=[str(service_script)] + service_args,
         system_scope=args.system,
         working_dir=REPO_ROOT,

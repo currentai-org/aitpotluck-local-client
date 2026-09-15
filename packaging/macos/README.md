@@ -1,8 +1,39 @@
-# macOS packaging (placeholder)
+# macOS
 
-Future home for a .pkg installer and notarization workflow around
+## Entry point
+
+Same as Linux: `python3 -m installer.install`. macOS ships `python3` by
+default on every currently-supported release, so there's no
+find-or-install-Python bootstrap step here (unlike Windows) -- see
+`installer/python_bootstrap.py::ensure_python()`, which on macOS just
+raises a clear "brew install python3" message if somehow no Python 3.9+ is
+found (e.g. a stripped-down CI image).
+
+## Service backend: launchd
+
+Implemented in `installer/service/launchd.py`, invoking the exact same
+`service/aipotluck_service.py` script as Linux/Windows (no macOS-specific
+service code beyond the plist itself -- full portability of the actual
+supervision logic, see `service/runner.py`).
+
+- Default (user/agent scope): plist at
+  `~/Library/LaunchAgents/com.aipotluck.<name>.plist`, loaded via
+  `launchctl load -w`. Starts at login, `KeepAlive: true` restarts it on
+  crash.
+- `--system` scope: `/Library/LaunchDaemons/`, requires sudo, starts at
+  boot without login.
+
+## Status
+
+STUB: implemented per Apple's documented launchd/plist conventions, not
+exercised on real macOS hardware (no macOS host available in this
+environment). The service payload it launches
+(`service/aipotluck_service.py` -> `service/runner.py` ->
+`service/llama_supervisor.py`) is the identical, already-tested-on-Linux
+code -- the untested surface is narrowly the plist generation and
+`launchctl` invocation.
+
+## Future work
+
+A .pkg installer + notarization workflow around
 `python -m installer.install`. Not implemented yet.
-
-Also the eventual location for launchd validation notes once run on real
-macOS hardware (see `installer/service/launchd.py`, currently stubbed and
-untested).

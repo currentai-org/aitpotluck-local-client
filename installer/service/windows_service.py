@@ -102,9 +102,12 @@ class WindowsServiceManager(ServiceManager):
         name: str, exec_path: Path, args: list[str],
         working_dir: Path | None, log_dir: Path | None,
     ) -> None:
-        """Registers a real Windows Service via pywin32. Requires the
-        `pywin32` package (Windows-only optional dependency) and an
-        elevated (admin) process. STUB -- not exercised."""
+        """Registers a real Windows Service via pywin32, delegating to
+        service/windows_service_host.py (an AipotluckWindowsService /
+        win32serviceutil.ServiceFramework subclass). Requires the pywin32
+        package (Windows-only optional dependency) and an elevated (admin)
+        process. STUB -- implemented per pywin32 docs, not exercised on
+        real Windows hardware."""
         try:
             import win32serviceutil  # type: ignore  # noqa: F401
         except ImportError as exc:
@@ -112,18 +115,15 @@ class WindowsServiceManager(ServiceManager):
                 "pywin32 is required for --system Windows service install. "
                 "Install with: pip install aipotluck-local-client[windows]"
             ) from exc
-        log.warning(
-            "Windows --system service install is stubbed and untested. "
-            "Expected flow: implement a win32serviceutil.ServiceFramework "
-            "subclass wrapping %s %s and call "
-            "win32serviceutil.HandleCommandLine(['install']), then "
-            "`sc config %s start= auto`.",
-            exec_path, args, name,
-        )
-        raise NotImplementedError(
-            "Windows --system service install is stubbed; run without "
-            "--system for the schtasks-based no-admin path."
-        )
+
+        host_script = Path(__file__).resolve().parent.parent.parent / "service" / "windows_service_host.py"
+        python_exe = exec_path  # the resolved python.exe from platform_bootstrap
+        cmd = [str(python_exe), str(host_script), "--startup", "auto", "install"]
+        log.info("Registering Windows Service (STUB, untested): %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Windows Service registration failed: {result.stderr.strip()}")
+        subprocess.run(["sc", "config", name, "start=", "auto"], capture_output=True, text=True)
 
     @staticmethod
     def _uninstall_windows_service(name: str) -> None:
