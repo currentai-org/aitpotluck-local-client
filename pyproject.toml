@@ -1,0 +1,20 @@
+[project]
+name = "aipotluck-local-client"
+version = "0.1.0"
+description = "Cross-platform installer and local inference server wrapper (llama.cpp) for aipotluck."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+windows = ["pywin32; sys_platform == 'win32'"]
+dev = ["pytest"]
+
+[project.scripts]
+aipotluck-install = "installer.install:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["installer*", "service*"]

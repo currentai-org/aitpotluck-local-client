@@ -1,0 +1,130 @@
+"""Windows service backend. STUBBED -- not exercised in this environment
+(no Windows host to test against).
+
+Default (no admin required): a Scheduled Task via `schtasks`, running at
+logon under the current user. This mirrors the no-admin/per-user default
+used on Linux (systemd --user) and macOS (LaunchAgents).
+
+--system scope (requires elevation): registers a real Windows Service via
+pywin32 (win32serviceutil), started automatically at boot without login --
+the true system-service parity with systemd --system / launchd
+LaunchDaemons. pywin32 is only required for this path; it's declared as an
+optional dependency (see pyproject.toml windows extra) so Linux/macOS
+installs never need it.
+"""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+from pathlib import Path
+
+from installer.service.base import ServiceManager, ServiceState, ServiceStatus
+
+log = logging.getLogger("aipotluck.installer.service.windows_service")
+
+TASK_PREFIX = "AIPotluck"
+
+
+def _task_name(name: str) -> str:
+    return f"{TASK_PREFIX}_{name}"
+
+
+class WindowsServiceManager(ServiceManager):
+    """STUB: no-admin path uses schtasks; --system path uses pywin32.
+    Neither has been exercised on real Windows -- implemented per
+    documented schtasks/pywin32 conventions only."""
+
+    def install(
+        self,
+        name: str,
+        exec_path: Path,
+        args: list[str],
+        *,
+        system_scope: bool = False,
+        working_dir: Path | None = None,
+        log_dir: Path | None = None,
+    ) -> None:
+        if system_scope:
+            self._install_windows_service(name, exec_path, args, working_dir, log_dir)
+            return
+
+        task_name = _task_name(name)
+        command = " ".join([f'"{exec_path}"'] + [f'"{a}"' for a in args])
+        cmd = [
+            "schtasks", "/create", "/f",
+            "/sc", "onlogon",
+            "/tn", task_name,
+            "/tr", command,
+        ]
+        log.info("Would run (STUB, untested): %s", " ".join(cmd))
+        subprocess.run(cmd, capture_output=True, text=True)
+
+    def uninstall(self, name: str, *, system_scope: bool = False) -> None:
+        if system_scope:
+            self._uninstall_windows_service(name)
+            return
+        subprocess.run(
+            ["schtasks", "/delete", "/tn", _task_name(name), "/f"],
+            capture_output=True, text=True,
+        )
+
+    def start(self, name: str, *, system_scope: bool = False) -> None:
+        if system_scope:
+            subprocess.run(["sc", "start", name], capture_output=True, text=True)
+            return
+        subprocess.run(["schtasks", "/run", "/tn", _task_name(name)], capture_output=True, text=True)
+
+    def stop(self, name: str, *, system_scope: bool = False) -> None:
+        if system_scope:
+            subprocess.run(["sc", "stop", name], capture_output=True, text=True)
+            return
+        subprocess.run(["schtasks", "/end", "/tn", _task_name(name)], capture_output=True, text=True)
+
+    def status(self, name: str, *, system_scope: bool = False) -> ServiceStatus:
+        if system_scope:
+            result = subprocess.run(["sc", "query", name], capture_output=True, text=True)
+            if result.returncode != 0:
+                return ServiceStatus(ServiceState.NOT_INSTALLED, detail=result.stderr.strip())
+            if "RUNNING" in result.stdout:
+                return ServiceStatus(ServiceState.RUNNING, detail=result.stdout.strip())
+            return ServiceStatus(ServiceState.STOPPED, detail=result.stdout.strip())
+
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", _task_name(name)], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return ServiceStatus(ServiceState.NOT_INSTALLED, detail=result.stderr.strip())
+        return ServiceStatus(ServiceState.UNKNOWN, detail=result.stdout.strip())
+
+    @staticmethod
+    def _install_windows_service(
+        name: str, exec_path: Path, args: list[str],
+        working_dir: Path | None, log_dir: Path | None,
+    ) -> None:
+        """Registers a real Windows Service via pywin32. Requires the
+        `pywin32` package (Windows-only optional dependency) and an
+        elevated (admin) process. STUB -- not exercised."""
+        try:
+            import win32serviceutil  # type: ignore  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "pywin32 is required for --system Windows service install. "
+                "Install with: pip install aipotluck-local-client[windows]"
+            ) from exc
+        log.warning(
+            "Windows --system service install is stubbed and untested. "
+            "Expected flow: implement a win32serviceutil.ServiceFramework "
+            "subclass wrapping %s %s and call "
+            "win32serviceutil.HandleCommandLine(['install']), then "
+            "`sc config %s start= auto`.",
+            exec_path, args, name,
+        )
+        raise NotImplementedError(
+            "Windows --system service install is stubbed; run without "
+            "--system for the schtasks-based no-admin path."
+        )
+
+    @staticmethod
+    def _uninstall_windows_service(name: str) -> None:
+        subprocess.run(["sc", "delete", name], capture_output=True, text=True)
