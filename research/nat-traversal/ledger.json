@@ -390,6 +390,60 @@
       "url": "https://github.com/aiortc/aioquic",
       "title": "aiortc/aioquic: QUIC and HTTP/3 implementation in Python",
       "accessed": "2026-09-16"
+    },
+    {
+      "id": 66,
+      "url": "https://github.com/jpillora/chisel",
+      "title": "GitHub - jpillora/chisel: A fast TCP/UDP tunnel over HTTP",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 67,
+      "url": "https://github.com/erebe/wstunnel",
+      "title": "GitHub - erebe/wstunnel: Tunnel all your traffic over Websocket or HTTP2",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 68,
+      "url": "https://github.com/inconshreveable/muxado",
+      "title": "GitHub - inconshreveable/muxado: Stream multiplexing for Go",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 69,
+      "url": "https://chromedevtools.github.io/devtools-protocol",
+      "title": "Chrome DevTools Protocol Viewer",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 70,
+      "url": "https://github.com/hashicorp/yamux",
+      "title": "GitHub - hashicorp/yamux: Golang connection multiplexing library",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 71,
+      "url": "https://www.jsonrpc.org/specification",
+      "title": "JSON-RPC 2.0 Specification",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 72,
+      "url": "https://github.com/localtunnel/localtunnel",
+      "title": "GitHub - localtunnel/localtunnel: expose yourself",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 73,
+      "url": "https://platform.openai.com/docs/api-reference/chat/streaming",
+      "title": "API Overview - OpenAI API Reference",
+      "accessed": "2026-09-16"
+    },
+    {
+      "id": 74,
+      "url": "https://platform.openai.com/docs/guides/realtime",
+      "title": "Getting started with the Realtime API - OpenAI API",
+      "accessed": "2026-09-16"
     }
   ]
 }

@@ -330,6 +330,128 @@ the WebSocket-primary / Cloudflare-Tunnel-fallback pattern against 2-3 real corp
 network configurations (a locked-down office Wi-Fi, a CGNAT'd home ISP connection, and a
 network with an explicit HTTPS-inspecting proxy) to validate the paper reachability
 claims made by the cited sources against this project's actual traffic pattern.</p>
+<h2>Addendum: Wire Format, Infra Lift, Reliability, and Simplicity</h2>
+<p>Follow-up analysis against four specific axes the user flagged, informed by
+examining llama-server's actual OpenAI-compatible surface and by prior art for
+tunneling arbitrary HTTP traffic over a single outbound connection.</p>
+<h3>What "encapsulate the OpenAI-compatible API" actually requires</h3>
+<p>llama-server's <code>/v1/chat/completions</code> endpoint is not a narrow JSON RPC call.
+Inspecting its own README shows it accepts, in addition to plain text
+messages: base64-encoded or locally-pathed images/audio/video inside
+<code>messages[i].content[j]</code>, arbitrary JSON <code>response_format</code> schemas, and either
+a single JSON response or a Server-Sent-Events stream depending on the
+<code>stream</code> flag<sup class="cite">[73]</sup>. It also exposes <code>/v1/chat/completions/control</code> as a
+<strong>second, concurrent</strong> HTTP call a client sends <em>while a stream from the first
+call is still open</em>, to steer or terminate an in-flight generation<sup class="cite">[73]</sup><sup class="cite">[74]</sup>.</p>
+<p>This has one clear design implication: whatever transport is chosen needs to
+carry <strong>arbitrary, unmodified HTTP semantics</strong> -- multiple content types
+(JSON, base64 binary, SSE), multiple concurrent in-flight requests over one
+connection, arbitrary headers -- not just "send a chat message, get tokens
+back." Building a narrow custom message schema (e.g. a bespoke JSON-RPC method
+per llama-server endpoint) means re-deriving OpenAI-API compatibility by hand
+and re-doing it every time llama-server's surface grows. The lower-maintenance
+path is to make the transport dumb: <strong>carry raw HTTP request/response bytes
+end to end, and let llama-server's own HTTP server (which already fully
+implements the API) do all the interpretation.</strong> This is exactly the "thin
+wrapper around an HTTP REST API" framing from the prompt.</p>
+<h3>Prior art: this exact problem is already solved</h3>
+<p>Tunneling arbitrary HTTP over a single persistent outbound connection is a
+well-trodden pattern with multiple mature reference implementations:</p>
+<ul>
+<li><strong>wstunnel</strong><sup class="cite">[67]</sup>: tunnels arbitrary TCP/UDP traffic (including raw HTTP)
+  over a WebSocket or HTTP/2 connection specifically to bypass firewalls/DPI,
+  with static binaries for all three OSes. Its entire purpose is "make
+  arbitrary traffic look like ordinary WebSocket/HTTPS traffic to a firewall."</li>
+<li><strong>chisel</strong><sup class="cite">[66]</sup>: a single Go binary implementing a client-initiated tunnel
+  (secured via SSH framing) that multiplexes many logical TCP streams over
+  one outbound HTTP connection, explicitly built "for passing through
+  firewalls." Notably it already handles reconnection with exponential
+  backoff and detects silently-dead connections via keepalive pings<sup class="cite">[66]</sup> --
+  solving axis 3 (reliability) as a side effect of its transport design.</li>
+<li><strong>localtunnel</strong><sup class="cite">[72]</sup> and <strong>smee.io/smee-client</strong> are simpler, JS-native
+  versions of the same idea (client dials out, server proxies public HTTP
+  requests back down the tunnel) -- smee-client in particular is exactly a
+  Node.js package receiving webhook-shaped HTTP payloads and forwarding them
+  to a local HTTP server, a close structural cousin of "receive an inference
+  request, forward to local llama-server."</li>
+<li><strong>yamux</strong><sup class="cite">[70]</sup> and <strong>muxado</strong><sup class="cite">[68]</sup> are the underlying primitive both chisel
+  and many other tools build on: a generic stream-multiplexing protocol over
+  any single reliable byte connection (TCP, or a WebSocket's byte stream).
+  Both explicitly call out NAT traversal and server-initiated streams as a
+  design goal<sup class="cite">[68]</sup><sup class="cite">[70]</sup> -- the cloud can open a new logical "stream" toward the
+  client down the same connection the client dialed out with, without the
+  client ever listening on a port.</li>
+<li><strong>Chrome DevTools Protocol (CDP)</strong><sup class="cite">[69]</sup> is a real-world example of a
+  request/response + streamed-event protocol running over a single
+  WebSocket, using a JSON-RPC-shaped envelope (<code>id</code>, <code>method</code>, <code>params</code> /
+  <code>result</code>) to correlate concurrent in-flight calls -- the same
+  request-correlation problem this project has with <code>/v1/chat/completions</code>
+  running concurrently with <code>/v1/chat/completions/control</code>. JSON-RPC 2.0
+  itself<sup class="cite">[71]</sup> is the formal spec CDP's envelope loosely follows, and is a
+  reasonable model for wrapping the raw HTTP passthrough with a lightweight
+  envelope only where correlation is needed.</li>
+</ul>
+<h3>Recommendation: yamux-style multiplexed HTTP-over-WebSocket</h3>
+<p>Combining these axes, the design that scores best across all four:</p>
+<p><strong>One outbound <code>wss://</code> WebSocket connection, multiplexed with a yamux-style
+framing, where the cloud opens a new logical stream per inbound inference
+request and each stream carries a literal, byte-for-byte HTTP/1.1
+request/response (or just the JSON/SSE body, if terminating HTTP framing
+cloud-side).</strong> Concretely:</p>
+<ol>
+<li><strong>Wire format (axis 1).</strong> Don't invent a schema for chat messages. Forward
+   the client's raw HTTP request bytes (method, path, headers, body) to
+   llama-server's local port over one multiplexed stream, and forward
+   llama-server's raw HTTP response bytes (including SSE chunks as they
+   arrive) back over the same stream. This means base64 images, <code>stream:
+   true</code> SSE, arbitrary <code>response_format</code> schemas, and any future
+   llama-server/OpenAI-API additions pass through with <strong>zero transport-layer
+   changes ever required</strong> -- the transport doesn't know or care what's
+   inside the HTTP body. A concurrent <code>/v1/chat/completions/control</code> call
+   just opens a second logical stream on the same WebSocket while the first
+   is still flushing SSE chunks; yamux-style multiplexing is designed
+   exactly for this (bidirectional streams openable by either side, useful
+   for NAT traversal, per hashicorp's own description<sup class="cite">[70]</sup>).</li>
+<li><strong>Infrastructure lift (axis 2).</strong> The cloud side needs exactly one
+   component: a WebSocket endpoint on the existing Node/SvelteKit HTTP
+   server (the <code>ws</code> library, as already covered in the prior report<sup class="cite">[38]</sup>).
+   No broker, no relay VPS, no additional protocol server -- the
+   multiplexing and HTTP-forwarding logic is application code inside the one
+   process already running. This is the fewest-additional-components answer
+   among every option surveyed in the base report.</li>
+<li><strong>Reliability (axis 3).</strong> All the "stay connected" complexity is
+   contained in exactly one place: the WebSocket connection's own
+   liveness. There is no separate session/heartbeat state to track per
+   in-flight request -- individual inference requests are just streams
+   inside the one connection, so they live and die with requests, not with
+   connection health. The client only needs one piece of logic:
+   reconnect-with-backoff on the single outer WebSocket (as chisel and
+   Tailscale both already do as their whole job<sup class="cite">[5]</sup><sup class="cite">[66]</sup>). No request-level
+   session resumption logic is needed since HTTP requests/responses are
+   inherently short-lived compared to the outer connection's lifetime.</li>
+<li><strong>Simplicity for an open-source project (axis 4).</strong> This is a widely
+   understood pattern with multiple readable open-source reference
+   implementations to point contributors at (chisel and wstunnel are both
+   single-purpose, single-binary, well-documented tools whose entire
+   READMEs are "here's how HTTP-over-WebSocket tunneling works")<sup class="cite">[66]</sup><sup class="cite">[67]</sup>.
+   The Python client side needs only the <code>websockets</code> library plus a small,
+   auditable amount of code: read HTTP request bytes off a multiplexed
+   stream, <code>httpx</code>/<code>requests</code> them to <code>localhost:8080</code>, write the response
+   bytes back. No custom binary framing has to be invented from scratch --
+   yamux's frame format is a published, implementable spec<sup class="cite">[70]</sup>, or the
+   project can start even simpler (one WebSocket message per HTTP
+   request/response pair, forgoing true multiplexing until concurrency
+   demands it) and add multiplexing later without changing the wire
+   format's fundamental shape.</li>
+</ol>
+<p>This narrows the base report's tied 5/5 recommendation (Cloudflare Tunnel +
+persistent WebSocket) into a single concrete wire-level design: the
+persistent WebSocket <strong>is</strong> the transport, and what rides inside it is raw
+HTTP passthrough with yamux-style multiplexing for concurrent requests --
+not a hand-rolled chat-message protocol. Cloudflare Tunnel remains a viable
+<em>deployment-level</em> fallback (it can carry this same WebSocket, so nothing
+about this design conflicts with also offering it as a corporate-firewall
+escape hatch from the base report).</p>
 <h2>Sources</h2>
 <p><sup class="cite">[1]</sup> <a href="https://www.rfc-editor.org/rfc/rfc8489">https://www.rfc-editor.org/rfc/rfc8489</a> — RFC 8489: Session Traversal Utilities for NAT (STUN)
 <sup class="cite">[2]</sup> <a href="https://www.rfc-editor.org/rfc/rfc8656">https://www.rfc-editor.org/rfc/rfc8656</a> — RFC 8656: Traversal Using Relays around NAT (TURN)
@@ -385,6 +507,15 @@ claims made by the cited sources against this project's actual traffic pattern.<
 <sup class="cite">[62]</sup> <a href="https://www.rfc-editor.org/rfc/rfc9298.txt">https://www.rfc-editor.org/rfc/rfc9298.txt</a> — RFC 9298 - Proxying UDP in HTTP (CONNECT-UDP)
 <sup class="cite">[63]</sup> <a href="https://www.rfc-editor.org/rfc/rfc9484.txt">https://www.rfc-editor.org/rfc/rfc9484.txt</a> — RFC 9484 - Proxying IP in HTTP (connect-ip)
 <sup class="cite">[64]</sup> <a href="https://blog.cloudflare.com/unlocking-quic-proxying-potential">https://blog.cloudflare.com/unlocking-quic-proxying-potential</a> — Unlocking QUIC's proxying potential with MASQUE | Cloudflare Blog
-<sup class="cite">[65]</sup> <a href="https://github.com/aiortc/aioquic">https://github.com/aiortc/aioquic</a> — aiortc/aioquic: QUIC and HTTP/3 implementation in Python</p>
+<sup class="cite">[65]</sup> <a href="https://github.com/aiortc/aioquic">https://github.com/aiortc/aioquic</a> — aiortc/aioquic: QUIC and HTTP/3 implementation in Python
+<sup class="cite">[66]</sup> <a href="https://github.com/jpillora/chisel">https://github.com/jpillora/chisel</a> — GitHub - jpillora/chisel: A fast TCP/UDP tunnel over HTTP
+<sup class="cite">[67]</sup> <a href="https://github.com/erebe/wstunnel">https://github.com/erebe/wstunnel</a> — GitHub - erebe/wstunnel: Tunnel all your traffic over Websocket or HTTP2
+<sup class="cite">[68]</sup> <a href="https://github.com/inconshreveable/muxado">https://github.com/inconshreveable/muxado</a> — GitHub - inconshreveable/muxado: Stream multiplexing for Go
+<sup class="cite">[69]</sup> <a href="https://chromedevtools.github.io/devtools-protocol">https://chromedevtools.github.io/devtools-protocol</a> — Chrome DevTools Protocol Viewer
+<sup class="cite">[70]</sup> <a href="https://github.com/hashicorp/yamux">https://github.com/hashicorp/yamux</a> — GitHub - hashicorp/yamux: Golang connection multiplexing library
+<sup class="cite">[71]</sup> <a href="https://www.jsonrpc.org/specification">https://www.jsonrpc.org/specification</a> — JSON-RPC 2.0 Specification
+<sup class="cite">[72]</sup> <a href="https://github.com/localtunnel/localtunnel">https://github.com/localtunnel/localtunnel</a> — GitHub - localtunnel/localtunnel: expose yourself
+<sup class="cite">[73]</sup> <a href="https://platform.openai.com/docs/api-reference/chat/streaming">https://platform.openai.com/docs/api-reference/chat/streaming</a> — API Overview - OpenAI API Reference
+<sup class="cite">[74]</sup> <a href="https://platform.openai.com/docs/guides/realtime">https://platform.openai.com/docs/guides/realtime</a> — Getting started with the Realtime API - OpenAI API</p>
 </body>
 </html>

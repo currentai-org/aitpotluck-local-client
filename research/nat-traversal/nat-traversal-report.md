@@ -345,6 +345,137 @@ network configurations (a locked-down office Wi-Fi, a CGNAT'd home ISP connectio
 network with an explicit HTTPS-inspecting proxy) to validate the paper reachability
 claims made by the cited sources against this project's actual traffic pattern.
 
+## Addendum: Wire Format, Infra Lift, Reliability, and Simplicity
+
+Follow-up analysis against four specific axes the user flagged, informed by
+examining llama-server's actual OpenAI-compatible surface and by prior art for
+tunneling arbitrary HTTP traffic over a single outbound connection.
+
+### What "encapsulate the OpenAI-compatible API" actually requires
+
+llama-server's `/v1/chat/completions` endpoint is not a narrow JSON RPC call.
+Inspecting its own README shows it accepts, in addition to plain text
+messages: base64-encoded or locally-pathed images/audio/video inside
+`messages[i].content[j]`, arbitrary JSON `response_format` schemas, and either
+a single JSON response or a Server-Sent-Events stream depending on the
+`stream` flag[73]. It also exposes `/v1/chat/completions/control` as a
+**second, concurrent** HTTP call a client sends *while a stream from the first
+call is still open*, to steer or terminate an in-flight generation[73][74].
+
+This has one clear design implication: whatever transport is chosen needs to
+carry **arbitrary, unmodified HTTP semantics** -- multiple content types
+(JSON, base64 binary, SSE), multiple concurrent in-flight requests over one
+connection, arbitrary headers -- not just "send a chat message, get tokens
+back." Building a narrow custom message schema (e.g. a bespoke JSON-RPC method
+per llama-server endpoint) means re-deriving OpenAI-API compatibility by hand
+and re-doing it every time llama-server's surface grows. The lower-maintenance
+path is to make the transport dumb: **carry raw HTTP request/response bytes
+end to end, and let llama-server's own HTTP server (which already fully
+implements the API) do all the interpretation.** This is exactly the "thin
+wrapper around an HTTP REST API" framing from the prompt.
+
+### Prior art: this exact problem is already solved
+
+Tunneling arbitrary HTTP over a single persistent outbound connection is a
+well-trodden pattern with multiple mature reference implementations:
+
+- **wstunnel**[67]: tunnels arbitrary TCP/UDP traffic (including raw HTTP)
+  over a WebSocket or HTTP/2 connection specifically to bypass firewalls/DPI,
+  with static binaries for all three OSes. Its entire purpose is "make
+  arbitrary traffic look like ordinary WebSocket/HTTPS traffic to a firewall."
+- **chisel**[66]: a single Go binary implementing a client-initiated tunnel
+  (secured via SSH framing) that multiplexes many logical TCP streams over
+  one outbound HTTP connection, explicitly built "for passing through
+  firewalls." Notably it already handles reconnection with exponential
+  backoff and detects silently-dead connections via keepalive pings[66] --
+  solving axis 3 (reliability) as a side effect of its transport design.
+- **localtunnel**[72] and **smee.io/smee-client** are simpler, JS-native
+  versions of the same idea (client dials out, server proxies public HTTP
+  requests back down the tunnel) -- smee-client in particular is exactly a
+  Node.js package receiving webhook-shaped HTTP payloads and forwarding them
+  to a local HTTP server, a close structural cousin of "receive an inference
+  request, forward to local llama-server."
+- **yamux**[70] and **muxado**[68] are the underlying primitive both chisel
+  and many other tools build on: a generic stream-multiplexing protocol over
+  any single reliable byte connection (TCP, or a WebSocket's byte stream).
+  Both explicitly call out NAT traversal and server-initiated streams as a
+  design goal[68][70] -- the cloud can open a new logical "stream" toward the
+  client down the same connection the client dialed out with, without the
+  client ever listening on a port.
+- **Chrome DevTools Protocol (CDP)**[69] is a real-world example of a
+  request/response + streamed-event protocol running over a single
+  WebSocket, using a JSON-RPC-shaped envelope (`id`, `method`, `params` /
+  `result`) to correlate concurrent in-flight calls -- the same
+  request-correlation problem this project has with `/v1/chat/completions`
+  running concurrently with `/v1/chat/completions/control`. JSON-RPC 2.0
+  itself[71] is the formal spec CDP's envelope loosely follows, and is a
+  reasonable model for wrapping the raw HTTP passthrough with a lightweight
+  envelope only where correlation is needed.
+
+### Recommendation: yamux-style multiplexed HTTP-over-WebSocket
+
+Combining these axes, the design that scores best across all four:
+
+**One outbound `wss://` WebSocket connection, multiplexed with a yamux-style
+framing, where the cloud opens a new logical stream per inbound inference
+request and each stream carries a literal, byte-for-byte HTTP/1.1
+request/response (or just the JSON/SSE body, if terminating HTTP framing
+cloud-side).** Concretely:
+
+1. **Wire format (axis 1).** Don't invent a schema for chat messages. Forward
+   the client's raw HTTP request bytes (method, path, headers, body) to
+   llama-server's local port over one multiplexed stream, and forward
+   llama-server's raw HTTP response bytes (including SSE chunks as they
+   arrive) back over the same stream. This means base64 images, `stream:
+   true` SSE, arbitrary `response_format` schemas, and any future
+   llama-server/OpenAI-API additions pass through with **zero transport-layer
+   changes ever required** -- the transport doesn't know or care what's
+   inside the HTTP body. A concurrent `/v1/chat/completions/control` call
+   just opens a second logical stream on the same WebSocket while the first
+   is still flushing SSE chunks; yamux-style multiplexing is designed
+   exactly for this (bidirectional streams openable by either side, useful
+   for NAT traversal, per hashicorp's own description[70]).
+2. **Infrastructure lift (axis 2).** The cloud side needs exactly one
+   component: a WebSocket endpoint on the existing Node/SvelteKit HTTP
+   server (the `ws` library, as already covered in the prior report[38]).
+   No broker, no relay VPS, no additional protocol server -- the
+   multiplexing and HTTP-forwarding logic is application code inside the one
+   process already running. This is the fewest-additional-components answer
+   among every option surveyed in the base report.
+3. **Reliability (axis 3).** All the "stay connected" complexity is
+   contained in exactly one place: the WebSocket connection's own
+   liveness. There is no separate session/heartbeat state to track per
+   in-flight request -- individual inference requests are just streams
+   inside the one connection, so they live and die with requests, not with
+   connection health. The client only needs one piece of logic:
+   reconnect-with-backoff on the single outer WebSocket (as chisel and
+   Tailscale both already do as their whole job[5][66]). No request-level
+   session resumption logic is needed since HTTP requests/responses are
+   inherently short-lived compared to the outer connection's lifetime.
+4. **Simplicity for an open-source project (axis 4).** This is a widely
+   understood pattern with multiple readable open-source reference
+   implementations to point contributors at (chisel and wstunnel are both
+   single-purpose, single-binary, well-documented tools whose entire
+   READMEs are "here's how HTTP-over-WebSocket tunneling works")[66][67].
+   The Python client side needs only the `websockets` library plus a small,
+   auditable amount of code: read HTTP request bytes off a multiplexed
+   stream, `httpx`/`requests` them to `localhost:8080`, write the response
+   bytes back. No custom binary framing has to be invented from scratch --
+   yamux's frame format is a published, implementable spec[70], or the
+   project can start even simpler (one WebSocket message per HTTP
+   request/response pair, forgoing true multiplexing until concurrency
+   demands it) and add multiplexing later without changing the wire
+   format's fundamental shape.
+
+This narrows the base report's tied 5/5 recommendation (Cloudflare Tunnel +
+persistent WebSocket) into a single concrete wire-level design: the
+persistent WebSocket **is** the transport, and what rides inside it is raw
+HTTP passthrough with yamux-style multiplexing for concurrent requests --
+not a hand-rolled chat-message protocol. Cloudflare Tunnel remains a viable
+*deployment-level* fallback (it can carry this same WebSocket, so nothing
+about this design conflicts with also offering it as a corporate-firewall
+escape hatch from the base report).
+
 ## Sources
 
 [1] https://www.rfc-editor.org/rfc/rfc8489 — RFC 8489: Session Traversal Utilities for NAT (STUN)
@@ -402,3 +533,12 @@ claims made by the cited sources against this project's actual traffic pattern.
 [63] https://www.rfc-editor.org/rfc/rfc9484.txt — RFC 9484 - Proxying IP in HTTP (connect-ip)
 [64] https://blog.cloudflare.com/unlocking-quic-proxying-potential — Unlocking QUIC's proxying potential with MASQUE | Cloudflare Blog
 [65] https://github.com/aiortc/aioquic — aiortc/aioquic: QUIC and HTTP/3 implementation in Python
+[66] https://github.com/jpillora/chisel — GitHub - jpillora/chisel: A fast TCP/UDP tunnel over HTTP
+[67] https://github.com/erebe/wstunnel — GitHub - erebe/wstunnel: Tunnel all your traffic over Websocket or HTTP2
+[68] https://github.com/inconshreveable/muxado — GitHub - inconshreveable/muxado: Stream multiplexing for Go
+[69] https://chromedevtools.github.io/devtools-protocol — Chrome DevTools Protocol Viewer
+[70] https://github.com/hashicorp/yamux — GitHub - hashicorp/yamux: Golang connection multiplexing library
+[71] https://www.jsonrpc.org/specification — JSON-RPC 2.0 Specification
+[72] https://github.com/localtunnel/localtunnel — GitHub - localtunnel/localtunnel: expose yourself
+[73] https://platform.openai.com/docs/api-reference/chat/streaming — API Overview - OpenAI API Reference
+[74] https://platform.openai.com/docs/guides/realtime — Getting started with the Realtime API - OpenAI API
