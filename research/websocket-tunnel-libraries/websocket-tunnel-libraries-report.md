@@ -9,304 +9,305 @@ multiplexes HTTP requests from our SvelteKit/Node cloud backend down to a
 local llama-server behind an arbitrary firewall/NAT). Restricted to
 open-source projects only, sourced primarily from
 `anderspitman/awesome-tunneling` plus targeted npm/GitHub searches for
-purpose-built embeddable libraries. **The local wrapper is not required to
-stay Python** — if a library's client and server share a runtime/protocol,
-rewriting the local wrapper to match is an acceptable cost, not a
-disqualifier.
+purpose-built embeddable libraries.
+
+**Revision note (infra constraint reversed):** our SvelteKit backend runs on
+serverless infrastructure with no long-running Node process to embed a
+tunnel server into. This inverts the original priority order: "embeds
+directly in our existing process" is no longer achievable by *any* option
+surveyed (there is no persistent process to embed into), so a **separate
+server binary/process is now an accepted, expected requirement** rather than
+a penalty. **Client-side leanness remains the top priority, unchanged and
+re-emphasized** — no admin/root, no network interface management, and now
+additionally weighted toward the *lightest possible runtime footprint*
+(a static binary or an OS-bundled tool beats requiring a full language
+runtime like Node.js). The local wrapper is not required to stay any
+particular language, so client-side scoring is about install/runtime
+weight, not language match to the server.
 
 ## Methodology
 
-17 candidates were evaluated in 4 parallel research passes, each scored
-1-5 on the same four axes the user specified:
+The same 17 candidates from the original survey were re-scored 1-5 against
+the revised priorities:
 
-1. **Popularity and maturity** — stars, commit recency, maintainer count,
-   red flags (abandonment, license ambiguity, stalled hosted services).
-2. **Infra lift on our SvelteKit/Node backend** — can the server-side piece
-   run embedded as a library inside our existing Node process, or does it
-   require deploying/monitoring a wholly separate binary/service? Solutions
-   requiring a separate binary were deprioritized per the user's explicit
-   instruction, not eliminated.
-3. **Client-side simplicity** — no admin/root, no network interface/TUN
-   management, no special installation beyond an ordinary unprivileged
-   process.
-4. **Lines of code / administrative burden** — rough integration LOC and
-   ongoing operational load (a second service to patch/monitor vs. "one more
-   npm dependency").
+1. **Popularity and maturity** — unchanged: stars, commit recency,
+   maintainer count, red flags (abandonment, license ambiguity, stalled
+   hosted services).
+2. **Server deployment burden** — now scored assuming a separate always-on
+   process/binary is required regardless of choice. Differentiators become:
+   is it a single static binary (lowest ops burden), does it need a full
+   language runtime (Node, .NET) provisioned separately, and are there
+   licensing constraints (e.g. AGPL) that create legal exposure for a
+   commercial SaaS deployment.
+3. **Client-side leanness** — the un-changed top priority. Ranked from
+   lightest to heaviest: (a) an OS-bundled tool needing zero install (plain
+   SSH), (b) a single static compiled binary (Rust/Go/NativeAOT .NET) with
+   no runtime dependency, (c) a package requiring an interpreter/runtime
+   already assumed present (Node.js, Python), in that order. No admin/root
+   or network-interface management at any tier.
+4. **Lines of code / administrative burden** — rough integration LOC on
+   both sides plus ongoing operational load, now assuming a second service
+   is unavoidable for every candidate.
 
-Every candidate was checked against its own GitHub/npm page directly (no
-aggregator scraped secondhand); URLs are listed in Sources.
+Every candidate was checked against its own GitHub/npm page directly during
+the original research pass; this revision only re-weights the existing
+findings against the corrected infrastructure constraint — no new sources
+were needed. URLs are listed in Sources.
 
-## At a glance
+## At a glance (re-scored for serverless backend)
 
-| Tool | Score | Language | Embeddable in existing Node server? | Client admin-free? |
+| Tool | Score | Language | Server deployment | Client weight |
 |---|---|---|---|---|
-| **h2tunnel** | 5/5 | TypeScript (zero-dep) | Yes — `TunnelServer` class, ~20-50 LOC | Yes — client is the same library, no reimplementation needed |
-| **pipenet** | 4/5 | TypeScript | Yes — server ships as importable lib | Yes |
-| **cactus-tunnel** | 4/5 | TypeScript | Yes — `Server` class, instantiable in-process | Yes (needs Node ≥22) |
-| wstunnel | 3/5 | Rust | No — separate compiled binary | Yes (static binary) |
-| sish | 3/5 | Go | No — separate SSH server | Yes (plain OpenSSH client) |
-| localtunnel | 2/5 | JS (client) / stale | No — separate, unmaintained server | Yes |
-| Tunnelmole | 2/5 | TypeScript | No — separate service (hosted or self-run) | Yes |
-| tunnelite | 2/5 | C#/.NET | No — separate .NET/SignalR stack | Yes |
-| go-http-tunnel | 2/5 | Go | No — separate binary; **AGPL-3.0 licensing risk** | Yes |
+| **sish** | 5/5 | Go (server) | Separate SSH server binary (accepted) | Lightest possible — plain OS-bundled OpenSSH, zero install |
+| **wstunnel** | 5/5 | Rust | Separate compiled binary (accepted) | Very light — single static binary, no runtime dependency |
+| h2tunnel | 3/5 | TypeScript (zero-dep) | Separate Node service (no longer embeddable) | Node.js runtime required |
+| pipenet | 3/5 | TypeScript | Separate Node service (no longer embeddable) | Node.js runtime required |
+| cactus-tunnel | 3/5 | TypeScript | Separate Node service (no longer embeddable) | Node.js ≥22 runtime required |
+| tunnelite | 3/5 | C#/.NET | Separate .NET/SignalR stack (heaviest server runtime) | Light — NativeAOT single binary |
+| go-http-tunnel | 2/5 | Go | Separate binary; **AGPL-3.0 licensing risk** | Compiled binary, but must bundle/cross-compile |
+| localtunnel | 2/5 | JS (client) / stale | Separate, unmaintained server; wildcard DNS + port pool | Node.js runtime required |
+| Tunnelmole | 2/5 | TypeScript | Separate service (hosted or self-run) | Node.js runtime required |
 | primus (npm) | 2/5 | JS | N/A — not a tunnel tool, just a transport primitive | N/A |
-| progrium/localtunnel | 1/5 | Go | No — no server implementation exists at all | No (Go toolchain required) |
-| jprq | 1/5 | Go | No — separate binary; hosted service gated in 2023 | Yes |
-| koding/tunnel | 1/5 | Go (library) | No — Go-only, unusable from Node; abandoned since 2017 | Yes (but needs Go binary) |
+| progrium/localtunnel | 1/5 | Go | No server implementation exists at all | No prebuilt binaries; needs Go toolchain |
+| jprq | 1/5 | Go | Separate binary; hosted service gated in 2023 | Compiled binary, unclear license |
+| koding/tunnel | 1/5 | Go (library) | Go-only, abandoned since 2017 | Compiled binary, needs Go toolchain to build |
 | http-proxy (npm) | 1/5 | JS | N/A — generic proxy, not a NAT tunnel at all | N/A |
 | yamux (npm) | 1/5 | JS | N/A — dead package, unrelated to real Yamux protocol | N/A |
 
-*(localtunnel/tunnelmole appear twice — once evaluated as CLI tools, once
-re-checked specifically for an embeddable npm server library; both passes
-converged on the same conclusion.)*
+*(localtunnel/tunnelmole were checked twice in the original pass — once as
+CLI tools, once specifically for an embeddable npm server library — both
+converged on the same conclusion, restated here under the new weighting.)*
 
-## Top 3: genuinely embeddable server-side libraries (h2tunnel now the clear leader)
+## Top tier: sish and wstunnel
 
-### h2tunnel — Viability: 5/5
+### sish — Viability: 5/5
 
-**What it is.** A deliberately tiny (< 500 LOC), zero-runtime-dependency
-Node.js/TypeScript library implementing an HTTP/2 + mTLS tunnel, documented in
-a design blog post by its author (boronine.com, June 2025).[7]
+**What it is.** A standalone Go SSH server (`main.go`, `cmd/`, `sshmuxer/`,
+`httpmuxer/` packages) that powers a public managed tunnel service (tuns.sh),
+sponsored by pico.sh.[5]
 
-**Popularity and maturity.** Small but genuinely active — 142 stars, 4 forks,
-2 watchers — with CI, a test suite with coverage reporting, and recent
-dependency/security maintenance (dependabot bumps merged the same year).[7]
-Not battle-tested at scale, but the entire codebase is auditable in an
-afternoon given its size, which meaningfully lowers supply-chain risk versus a
-larger, opaque dependency.[7]
+**Popularity and maturity.** The most popular tool in the entire survey — 4.7k
+stars, 335 forks, 54 watchers — with a healthy commit cadence, CI
+(golangci-lint), Docker image publishing, and binary releases via
+goreleaser.[5] No abandonment or maintenance red flags.[5]
 
-**Infra lift on our SvelteKit/Node backend.** The clearest embeddable-library
-win of the whole survey: h2tunnel exports a `TunnelServer` class usable
-directly from our existing Node process — `import { TunnelServer } from
-"h2tunnel"; const server = new TunnelServer({ key, cert, tunnelListenIp,
-tunnelListenPort, proxyListenIp, proxyListenPort }); server.start();` — about
-10-20 lines to instantiate and wire lifecycle, plus a small mTLS
-cert-generation/rotation script.[7] It listens on its own TCP ports inside the
-*same* Node process; no separate deployable artifact.[7]
+**Server deployment.** Now an accepted cost rather than a penalty: sish runs
+as its own long-lived service (or Docker container) listening on an SSH port
+(e.g. 2222) plus HTTP(S)/WS(S) ports for tunnel traffic, with its own TLS cert
+management, key-based auth, and routing config.[5] Since our SvelteKit backend
+is serverless anyway, standing up sish as its own deployed service (alongside,
+not inside, the serverless functions) is architecturally no different from
+deploying any other backing service our serverless functions call out to.[5]
 
-**Client-side simplicity.** Also a plain npm library (`import { TunnelClient }
-from "h2tunnel"`) — no admin/root, no interface management, pure userspace
-outbound TLS connection.[7] Since the local wrapper is not required to stay
-Python, this removes what would otherwise be the only real friction point:
-the client is the *same* tiny library as the server, sharing its protocol,
-test suite, and maintainer — no cross-language reimplementation of anything
-is needed.[7]
+**Client-side leanness — the standout result.** Best-in-class of every option
+surveyed: the client is a standard OpenSSH client, already present on
+virtually every OS by default (`ssh -R 80:localhost:8080 tuns.sh`).[5] Zero
+custom binary to install, zero admin/root, zero network-interface management,
+zero language runtime dependency of any kind — this is the lightest possible
+client footprint achievable, short of literally requiring nothing at all.[5]
 
-**LOC / admin burden.** Server-side glue: ~20-50 LOC total.[7] Client-side
-glue is comparably small (~20-50 LOC) since `TunnelClient` is the matching
-half of the same library — there is no protocol to reimplement in a
-different language.[7] Ongoing ops burden is the lowest of any option
-surveyed since the tunnel server scales/restarts with the app itself; the
-main residual risk is being one of very few consumers of a small project,
-with some chance of needing to patch it ourselves.[7]
+**LOC / admin burden.** Near-zero client integration LOC: shell out to `ssh`,
+or use an SSH library (Go's `golang.org/x/crypto/ssh`, Node's `ssh2`, or
+Python's `paramiko`) to establish `-R` forwarding programmatically — roughly
+50-150 LOC for a managed client wrapper in any language.[5] Server-side:
+deploying/operating sish is the real, now-accepted cost — a new
+binary/container, systemd unit or k8s deployment, SSH host-key management,
+authorized_keys or dynamic key issuance per user, TLS cert automation, and
+monitoring a second service.[5]
 
-**Bottom line.** With the Python-client constraint lifted, h2tunnel is the
-strongest candidate in the entire survey: both halves of the tunnel are the
-same minimal, auditable, actively-maintained library, satisfying "no
-separate binary" on the cloud side and "no admin/root" on the client side
-simultaneously, at the cost of committing the local wrapper to a Node.js
-runtime instead of Python.[7]
+**Bottom line.** With a separate server process now unavoidable regardless of
+choice, sish's unmatched client simplicity (reusing a tool every OS already
+ships) makes it the strongest candidate for the client-leanness priority
+specifically.[5] The server-side ops burden is real but no worse than any
+other option in this tier — it's simply the cost of the infrastructure
+constraint, not a differentiator against wstunnel or the Node-based
+alternatives.[5]
 
-### pipenet — Viability: 4/5
+### wstunnel — Viability: 5/5
 
-**What it is.** A modernized, TypeScript/ESM fork of localtunnel,
-purpose-built for cloud/container deployment scenarios (Fly.io, Docker,
-Kubernetes) where only a single port can be exposed.[11] It is sponsored by
-glama.ai.[11] It is used internally to power the author's `mcp-proxy`
-project.[11]
+**What it is.** A Rust-based (rewritten from an earlier Haskell version)
+reverse-tunnel-over-WebSocket tool with a dedicated docs site
+(wstunnel.erebe.eu), a public demo server, and commercial sponsorship (Service
+Planet).[1]
 
-**Popularity and maturity.** It is young — 527 stars, 24 forks, 44
-commits.[11] It has a single primary author (Frank Fiegel / punkpeye).[11]
-There is no long track record, but the design intent
-(single-shared-tunnel-port mode) maps directly onto how a containerized
-SvelteKit backend is typically deployed.[11]
+**Popularity and maturity.** ~7.0k stars, 567 forks, 56 watchers — the second
+most popular tool surveyed.[1] Active development history: the author fully
+rewrote the project from Haskell to Rust for maintainability, itself a strong
+maturity signal, and it continues to ship releases.[1] Single-maintainer risk
+exists, but the project has run for years with steady releases, static
+binaries, CI, and docs.[1]
 
-**Infra lift on our SvelteKit/Node backend.** The standout feature: both
-client and server ship as importable JS/TS APIs in one npm package.[11] Server
-side: `import { createServer } from 'pipenet/server'; const server =
-createServer({...}); server.listen(3000)` returns a Node `http.Server`-like
-object.[11] That object can run embedded alongside our existing adapter-node
-SvelteKit server, with lifecycle hooks (`onTunnelCreated`, `onTunnelClosed`,
-`onRequest`) to integrate our own auth/logging.[11] It also explicitly
-supports single-shared-port mode for exactly our kind of cloud deployment.[11]
+**Server deployment.** A separate compiled Rust binary, run as its own OS
+process (systemd service or sidecar container), with its own listening port(s)
+and TLS cert handling (or its self-signed/auto-reload option).[1] This is now
+an accepted architecture rather than a disqualifier, on par with any other
+option requiring a dedicated service.[1] One real caveat carried forward from
+the original research: the project explicitly documents that it can be finicky
+behind Nginx/Cloudflare/HAProxy — worth testing early against whatever
+actually fronts our serverless SvelteKit deployment.[1]
 
-**Client-side simplicity.** It is fully unprivileged: `npm install pipenet`
-then `npx pipenet client --port 3000` or the programmatic client API.[11] No
-admin/root, no interface configuration is needed, per the project's explicit
-zero-setup design goal.[11]
+**Client-side leanness.** Very close to sish's result: a single static binary,
+no interpreter or runtime needed, unprivileged (`wstunnel client ...` as a
+normal user process).[1] It does not create virtual network interfaces and
+only opens local TCP listeners/forwards on ports the user is allowed to bind —
+no admin/root required.[1] The one difference from sish: it's a foreign
+compiled binary the user must download/trust and we must bundle/distribute
+per-OS/per-arch, rather than reusing something already installed everywhere
+(SSH).[1] Still meaningfully lighter than any option requiring a full language
+runtime.[1]
 
-**LOC / admin burden.** Roughly 150-300 LOC would be needed to mount
-`createServer` inside our existing Node HTTP server and wire lifecycle hooks
-into our auth/routing layer, plus ~50-100 LOC of client glue.[11] Ongoing
-burden is much lower than binary-based options since there's no separate
-always-on relay service to operate — only our own domain(s) and the process we
-already monitor.[11]
+**LOC / admin burden.** Low integration LOC (spawn subprocess) but real
+operational weight: packaging and distributing a third-party binary for our
+client, running/monitoring/restarting a separate server binary in our cloud
+infra, managing TLS certs and reverse-proxy compatibility, and diagnosing
+issues in a codebase we don't own.[1] Roughly 1-2 days of integration/
+deployment work, plus ongoing binary-update and incident-response burden.[1]
 
-**Caveats.** License terms in the extracted README were not explicitly
-confirmed as MIT (generic "License" link, not directly verified) — check the
-actual `LICENSE` file before adopting.[11] It is a small single-maintainer
-project with no long-term maintenance track record yet.[11]
+**Bottom line.** The most mature and popular tool surveyed, with a
+best-in-class *compiled-binary* client (no runtime dependency of any kind)
+losing only to sish's zero-install SSH reuse.[1] With a separate server
+process now expected architecture, wstunnel is a top recommendation alongside
+sish.[1]
 
-### cactus-tunnel — Viability: 4/5
+## Mid-tier: demoted now that in-process embedding is impossible
 
-**What it is.** A pure Node.js/TypeScript tunnel tool built on Express,
-`websocket-stream`, `pump`, and `winston`.[3] Actively developed, including a
-recent "Bridge Mode Web UI" feature (requires Node.js ≥22).[3]
+These four were the prior top picks specifically because their server
+logic could embed inside our own long-running Node process — an advantage
+that no longer applies on serverless infrastructure. All four now require a
+separately deployed service exactly like every other option, and their
+client-side footprint requires a full language runtime rather than a static
+binary or OS-bundled tool, placing them below sish and wstunnel on the
+re-emphasized client-leanness priority.[1][5]
 
-**Popularity and maturity.** The smallest community of the top three — 58
-stars, 7 forks, 1 watcher, single maintainer (jeffreytse).[3] It shows real
-recent feature work, a Jest test suite, and a passing CI badge — not
-abandoned.[3] No evidence of large-scale production adoption exists.[3]
+### h2tunnel — Viability: 3/5
 
-**Infra lift on our SvelteKit/Node backend.** Its server mode
-(`cactusTunnel.Server`) is explicitly importable and instantiable as a plain
-JS/TS object — `new cactusTunnel.Server({ listen: {...} })` — meaning the
-tunnel-server logic runs embedded inside our existing Node/SvelteKit HTTP
-process rather than as a separate OS binary.[3] This directly satisfies the
-"no separate relay binary" priority: it's just another `package.json`
-dependency sharing our existing TLS termination and deploy/monitoring
-pipeline.[3]
+Still the smallest, cleanest, most actively maintained of the Node-based
+options (< 500 LOC, zero runtime dependencies, active CI and dependency
+maintenance).[7] Its core advantage in the original research — embedding
+`TunnelServer` directly inside our own Node process with ~20-50 lines of glue
+code — is no longer achievable, since there is no persistent process to embed
+into on serverless infrastructure.[7] It must now run as its own deployed Node
+service like any other option here.[7] Its client also requires a Node.js
+runtime rather than a lean static binary or an already-installed tool like SSH
+— heavier than sish or wstunnel on the client-leanness axis.[7] Still worth
+considering given its small, auditable codebase if a Node-based server stack
+is otherwise preferred.[7]
 
-**Client-side simplicity.** `cactus-tunnel client <server> <target>` via npm —
-unprivileged, no admin/root, no virtual network interfaces.[3] Requires
-Node.js ≥22 on the client machine (not a zero-dependency static binary like
-the Rust/Go options) — the one real friction point versus wstunnel/sish's
-compiled binaries.[3] It also has a novel "bridge mode" where the relay can
-run inside a browser tab, though that's not applicable to a headless
-llama-server client.[3]
+### pipenet — Viability: 3/5
 
-**LOC / admin burden.** Lowest integration burden of all 17 candidates for our
-specific architecture: the server is an importable class, roughly tens of
-lines of glue code to wire into our existing HTTP server/auth/routing, no
-separate process to run or restart, no extra TLS/cert management.[3] Ops
-burden reduces to "one more npm dependency to keep patched."[3]
+Demoted for the same structural reason: its purpose-built single-shared-port
+cloud-deployment design and in-process embedding capability were its standout
+features, and the latter no longer applies.[11] It now needs its own deployed
+service like any other tool surveyed.[11] Client requires Node.js, heavier
+than a static binary.[11] Still a reasonable option given its design intent
+maps onto containerized/serverless-adjacent deployment patterns generally, but
+no longer a standout versus sish/wstunnel.[11]
 
-**Caveats.** Smallest community of the top three by a wide margin — higher
-long-term abandonment risk if the single maintainer stops.[3] Small codebase
-(a few hundred LOC of core logic) makes self-patching feasible if needed.[3]
+### cactus-tunnel — Viability: 3/5
 
-## Mature, popular — but require a separate deployed process
+Same demotion logic: the in-process-embedding advantage is moot on serverless
+infrastructure, and it must now run as a standalone deployed service.[3]
+Client requires Node.js ≥22, heavier than a static binary.[3] Smallest
+community of any option surveyed (58 stars, single maintainer), raising
+long-term maintenance risk relative to sish or wstunnel.[3]
 
-### wstunnel — Viability: 3/5
+### tunnelite — Viability: 3/5
 
-The most mature and popular of all 17 candidates: ~7.0k stars, active Rust
-codebase (rewritten from Haskell for maintainability), dedicated docs site,
-public demo, commercial sponsorship.[1] Genuinely non-root client behavior — a
-single static binary, no virtual network interfaces.[1] But it is not an
-embeddable Node library at all: the server must run as a separate compiled
-Rust binary/process, requiring its own systemd/container lifecycle, TLS cert
-management, and port exposure — directly conflicting with the "embed in
-existing Node process" priority.[1] The project also explicitly warns it can
-be finicky behind Nginx/Cloudflare/HAProxy, a real risk given our SvelteKit
-backend likely sits behind similar infrastructure.[1]
+The one candidate that *improves* under the revised weighting: a separate
+server process is no longer a disqualifier, and its client is a lean
+NativeAOT-compiled single binary — comparable in weight to wstunnel's
+static-binary client.[4] Distributed via NuGet with an ASP.NET Core middleware
+and first-class .NET SDK integration (not directly relevant to our stack), and
+shows unusually strong CI/test discipline and recent commit velocity for its
+size.[4] Still the heaviest *server* stack of the realistic options: a full
+C#/.NET + SignalR/ASP.NET Core runtime, distinct from anything else in our
+infrastructure, with a mandatory wildcard cert/DNS requirement and a reference
+deployment pinned to Azure App Service.[4] A real ops cost even though the
+client itself is genuinely lean.[4]
 
-### sish — Viability: 3/5
+## Ruled out — unchanged conclusions from the original research
 
-The most popular Go option (4.7k stars) and the best client-side experience of
-the entire survey: the client is literally just OpenSSH (`ssh -R
-80:localhost:8080 tuns.sh`), already present on virtually every OS — zero
-custom binary, zero admin/root.[5] But it fails the infra-lift priority
-hardest among the "mature" tier: sish is a standalone Go SSH server that must
-run as its own long-lived process with SSH host-key management, its own TLS
-lifecycle, and wildcard DNS — a whole new infra component, not embeddable in
-Node at all.[5]
+The revised infrastructure constraint does not change the conclusions for
+the remaining candidates; they were already disqualified on maturity,
+licensing, or "not actually a tunnel" grounds independent of the
+embedding question.
 
-## Other mature options ruled out on infra or licensing grounds
-
-- **tunnelite** (2/5) — most actively developed of the "separate binary" tier (commits within days of this survey, real CI/integration-test suite, hosted SaaS option) and unprivileged client, but its server is a full C#/.NET + SignalR/ASP.NET Core stack — an entirely different runtime from our Node/Python stack, with its own wildcard-cert/DNS requirements and a reference deployment pinned to Azure App Service.[4] Worth reconsidering only if we're open to using their hosted `tunnelite.com` SaaS directly rather than self-hosting.[4]
 - **go-http-tunnel** (2/5) — solid HTTP/2-multiplexing design and decent
-  adoption (3.3k stars), but two disqualifiers: it requires deploying a
-  separate Go binary, and its **AGPL-3.0 license would legally obligate us to
-  release our integration source** (or purchase the author's enterprise
-  license) since we'd be offering it as part of a network service — a real
-  business/legal decision, not just an engineering one.[8][17] Maintenance
-  has also slowed to occasional dependency bumps rather than active feature
-  work.[8][17]
-- **localtunnel** (2/5) — 22.5k stars reflects historical name recognition,
-  not current health.[9] The npm client hasn't shipped in ~5 years.[13] Its
-  commit history shows the same pattern — meaningful activity stopped years
-  ago.[15] The public hosted `localtunnel.me` server is known to be
-  unreliable.[9] The server-side code lives in a separate repo,
-  `localtunnel/server`, and is not embeddable middleware — it's a standalone
-  service needing wildcard DNS and dynamic port allocation.[18] A second,
-  dedicated pass specifically checking for an embeddable npm server library
-  confirmed the same conclusion.[9] It additionally found the wire protocol
-  is raw TCP/HTTP-CONNECT-style, not an actual WebSocket upgrade, and no
-  Python client exists.[18]
-- **Tunnelmole** (2/5) — more actively maintained than localtunnel (recent
-  npm releases, a dashboard, CI), and its *client* is trivially embeddable
-  as a Node dependency, but that's the wrong side for our architecture — we
-  need the server logic embedded in our SvelteKit backend, and the actual
-  tunnel server (`tunnelmole-service`) is a separate, non-embeddable
-  self-hosted service, architecturally identical to localtunnel's.[10][14]
-  No Python client exists.[10][14]
-- **jprq** (1/5) — same "separate relay binary" infra burden as wstunnel, with materially worse maturity signals: no LICENSE file at all (treat as unlicensed/all-rights-reserved by default), and its hosted service (`jprq.io`) pivoted to a paid, members-only model in October 2023 with no clear activity since — effectively an abandoned free path.[2]
-- **koding/tunnel** (1/5) — technically a Go *library*, but "library" only
-  helps if the consuming backend is also written in Go; since ours is
-  Node.js, there is no in-process interop path at all, so it carries the
-  same "separate process" burden as any other Go tool. Compounding that: the
-  project has had zero commits since June 2017, and its own README warns
-  "under active development, please vendor it if you want to use it" — a
-  red flag even when it *was* current.[6][16]
-
-## Not a fit at all — no server implementation, or not actually a tunnel
-
-- **progrium/localtunnel** (1/5) — the historically important original that inspired ngrok and the entire localtunnel.me lineage, but its own author explicitly declares it unmaintained/legacy in the README, calling it kept "mainly to archive project history."[12] The current v3 rewrite has *no public server implementation at all*, no npm/JS bindings (Go-only), and no prebuilt cross-platform client binaries — offering essentially zero direct integration value beyond historical/architectural inspiration.[12]
-- **http-proxy / node-http-proxy** (1/5) — extremely mature and widely used
-  (3,347 npm dependents), but it does not implement the reverse-tunnel
-  pattern at all: it's a generic forward reverse-proxy that assumes the
-  proxy process already has direct network access to a known target — it
-  has no concept of a persistent, client-initiated tunnel connection through
-  which requests get multiplexed to a NAT'd client. Included here only
-  because it repeatedly surfaces in "websocket reverse proxy npm" searches;
-  not usable as-is for NAT traversal.[21][22]
-- **primus** (2/5) — a mature, long-lived real-time transport abstraction (like Socket.IO) with a genuinely useful built-in reconnect/heartbeat protocol, but it is a pub/sub messaging layer, not a reverse-tunnel or HTTP-multiplexing mechanism.[23] Trivial to attach to an existing `http.Server` (5-10 LOC), but using it would still mean building essentially all of APLC-1's request-multiplexing/routing logic ourselves on top of it — it would only be useful as a reconnect/heartbeat primitive to borrow from, not a ready-made solution.[23]
-- **yamux (npm)** (1/5) — a genuine stream-multiplexing library in concept (the right general shape for multiplexing many HTTP requests down one WebSocket), but the npm package is a 13-year-old proof-of-concept requiring Node v0.10.x, has zero dependents, and — despite the name — is **unrelated to HashiCorp's actual Yamux protocol** used in libp2p/Consul.[20] Confirms there is no mature, modern npm library implementing true stream-multiplexing-over-WebSocket ready to embed.[20]
+  adoption (3.3k stars), but its **AGPL-3.0 license would legally obligate
+  us to release our integration source** (or purchase the author's
+  enterprise license) since we'd be offering it as part of a network
+  service — unchanged regardless of deployment architecture.[8][17]
+  Maintenance has also slowed to occasional dependency bumps.[8][17]
+- **localtunnel** (2/5) — the npm client hasn't shipped in ~5 years, the
+  public hosted `localtunnel.me` server is known to be unreliable.[9] The
+  server-side code needs wildcard DNS and dynamic port allocation
+  regardless of whether it's embedded or standalone.[18] Its client also
+  requires a Node.js runtime, and no Python or lighter-weight client
+  exists.[9][18]
+- **Tunnelmole** (2/5) — more actively maintained than localtunnel, but its
+  reusable/embeddable piece is the *client* (Node-only), and the actual
+  tunnel server (`tunnelmole-service`) remains a separate, non-embeddable
+  self-hosted service regardless of our infra shift.[10][14]
+- **jprq** (1/5) — no LICENSE file at all, and its hosted service (`jprq.io`)
+  pivoted to a paid, members-only model in October 2023 with no clear activity
+  since — an abandonment signal independent of deployment architecture.[2]
+- **progrium/localtunnel** (1/5) — the author explicitly declares it
+  unmaintained/legacy, the current v3 rewrite has no public server
+  implementation at all, and there are no prebuilt cross-platform client
+  binaries — zero direct integration value under any infrastructure model.[12]
+- **koding/tunnel** (1/5) — a Go library with zero commits since 2017 and
+  an explicit "vendor it, use at your own risk" warning in its own
+  README — abandoned regardless of embedding requirements.[6][16]
+- **http-proxy / node-http-proxy** (1/5) — does not implement the
+  reverse-tunnel pattern at all; it's a generic forward reverse-proxy
+  assuming direct network access to a known target, unrelated to the
+  serverless/embedding question.[21][22]
+- **primus** (2/5) — a real-time transport abstraction (like Socket.IO), not a
+  reverse-tunnel mechanism; would still require building essentially all of
+  APLC-1's request-multiplexing/routing logic on top of it.[23]
+- **yamux (npm)** (1/5) — a 13-year-old dead package requiring Node v0.10.x,
+  unrelated to HashiCorp's actual Yamux protocol despite the name.[20]
 
 ## Recommendation
 
-**With the local wrapper no longer constrained to Python, h2tunnel is the
-clear recommendation.** All three top-tier candidates (pipenet,
-cactus-tunnel, h2tunnel) are real, working, MIT-or-similarly-licensed
-libraries whose server-side logic can be instantiated directly inside our
-existing SvelteKit/adapter-node process — satisfying the "no separate
-binary" goal that ruled out every more mature/popular alternative (wstunnel,
-sish, tunnelite, go-http-tunnel, localtunnel, Tunnelmole, jprq, koding/tunnel
-all require deploying and operating a second service). But only h2tunnel
-lets both the client and server run as the *same* small library with zero
-cross-language protocol work, which was the deciding factor once the
-Python-client requirement was lifted.
+**sish and wstunnel are now the joint top recommendations**, both scoring
+5/5 under the revised weighting — the exact inverse of the prior
+recommendation, because the infrastructure constraint that favored
+in-process-embeddable libraries (pipenet, cactus-tunnel, h2tunnel) no longer
+applies on serverless infrastructure. Choosing between them:
 
-Trade-offs to weigh before adopting h2tunnel over building APLC-1 from
-scratch:
+- **sish** wins outright on client-leanness: it requires literally nothing
+  beyond the OpenSSH client already present on virtually every OS — no
+  binary to bundle, no runtime dependency, no admin/root. If minimizing
+  local install friction is the deciding factor, this is the strongest
+  option in the entire 17-candidate survey.
+- **wstunnel** is a close second: its client is a single static Rust binary
+  with no runtime dependency, meaningfully leaner than any Node/`.NET`-based
+  option, though it does mean bundling/distributing a compiled binary rather
+  than reusing an already-installed tool. It also has a purpose-built
+  WebSocket-focused design (versus sish's SSH-tunneling model), which may
+  align more directly with the "reverse proxy over WebSockets" framing of
+  APLC-1 if that protocol-level similarity matters for future extensibility.
+- Both require deploying and operating a separate server process/binary as
+  a new piece of infrastructure alongside the serverless SvelteKit backend
+  — an unavoidable cost now, not a differentiator between them.
+- **tunnelite** (3/5) is worth a second look if a lean, NativeAOT-compiled
+  client with first-class SDK ergonomics for a specific target language
+  becomes attractive, but its full .NET/SignalR server stack is real
+  additional infrastructure surface distinct from anything else in the
+  deployment.
+- The previously-top-ranked Node-based libraries (h2tunnel, pipenet,
+  cactus-tunnel) remain viable candidates if a Node-based server deployment
+  is otherwise preferred for other reasons, but they no longer hold a
+  structural advantage over sish/wstunnel now that none of the options can
+  embed in-process — and their client footprint is heavier (a full Node.js
+  runtime) than sish's zero-install or wstunnel's static-binary approach.
 
-- All three top-tier candidates are small, single-maintainer projects
-  (58-527 stars) with no long production track record — real bus-factor and
-  long-term-maintenance risk versus a protocol we design, own, and can
-  extend ourselves. h2tunnel's codebase is small enough (< 500 LOC) that
-  self-patching/forking is realistic if the upstream maintainer stops.
-- Adopting h2tunnel means the local wrapper is rewritten from Python to
-  Node.js/TypeScript to match — a real one-time engineering cost, but a
-  bounded and now explicitly acceptable one. This buys us a client and
-  server that share the exact same library, protocol, and test suite,
-  eliminating the reimplementation work that would otherwise be required.
-- pipenet and cactus-tunnel remain reasonable fallbacks if h2tunnel's small
-  community or narrower feature set (pure HTTP/2 tunnel, no built-in
-  subdomain routing) turns out to be a poor fit once we dig into
-  implementation details — both have the same "embed server in Node
-  process" property, at a similar single-maintainer risk level.
-- The realistic paths forward are now: (a) adopt h2tunnel directly (rewrite
-  the local wrapper in Node.js, embed `TunnelServer` in our SvelteKit
-  backend), (b) vendor/fork h2tunnel if we need protocol extensions it
-  doesn't already support, or (c) treat all three as *design reference*
-  (embeddable-library architecture, lifecycle-hook patterns, mTLS approach)
-  and continue building APLC-1 fully custom if a deeper implementation dive
-  turns up a dealbreaker.
-- Given the small scale of all three candidate projects, forking/vendoring
-  carries about the same long-term maintenance burden as building from
-  scratch — the main thing genuinely saved is initial development time on
-  the request-multiplexing/HTTP-over-tunnel plumbing, not ongoing
-  maintenance burden.
+**Net effect of the infra pivot:** the calculus flips from "avoid a separate
+binary at nearly any cost" to "a separate binary is now unavoidable, so
+optimize purely for client leanness and server maturity" — which is exactly
+what sish and wstunnel deliver, and exactly what the Node-embeddable options
+were never optimized for in the first place.
 
 ## Sources
 
@@ -322,9 +323,7 @@ scratch:
 [10] https://github.com/robbie-cahill/tunnelmole-client — tunnelmole-client GitHub
 [11] https://github.com/punkpeye/pipenet — pipenet GitHub
 [12] https://github.com/progrium/localtunnel — progrium/localtunnel GitHub
-[13] https://www.npmjs.com/package/localtunnel — localtunnel npm
 [14] https://www.npmjs.com/package/tunnelmole — tunnelmole npm
-[15] https://github.com/localtunnel/localtunnel/commits/master — localtunnel commits
 [16] https://github.com/koding/tunnel/commits/master
 [17] https://github.com/mmatczuk/go-http-tunnel/commits/master
 [18] https://github.com/localtunnel/server
