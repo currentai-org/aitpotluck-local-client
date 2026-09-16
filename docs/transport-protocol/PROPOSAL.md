@@ -144,3 +144,79 @@ rationale, scope, and rollout.
   is not part of this protocol proposal — it is a deployment-level decision
   about how the WebSocket's TCP connection reaches the cloud, orthogonal to
   what rides inside it.
+
+
+## 6. Sanity check: Hugging Face InferenceClient
+
+Verified directly against `huggingface_hub`'s source
+(`src/huggingface_hub/inference/_client.py`) and its docs. Short answer:
+**no, it would not be any different, and no changes to APLC-1 are needed.**
+
+### 6.1 What InferenceClient actually is
+
+`InferenceClient` is a Python SDK convenience wrapper, not a network
+protocol. Its own source comments state the design philosophy plainly:
+*"let's make it as easy as possible to use it, even if less optimized"* —
+it accepts inputs as bytes/file paths/URLs, guesses content types, and
+picks recommended models, but underneath it is making plain HTTPS calls via
+`requests`/`huggingface_hub`'s HTTP session helper. There is no WebSocket,
+no custom binary framing, no persistent connection of any kind. Every
+`InferenceClient` method (`chat_completion`, `audio_classification`,
+`text_to_image`, etc.) resolves to one `POST` (or `GET`) to some resolved
+`base_url + path`, with either a synchronous JSON response or an SSE stream
+for chat completions specifically.
+
+### 6.2 Where it overlaps with "the OpenAI-compatible API"
+
+For `chat_completion()` specifically, when routed through HF's "Inference
+Providers" router (`https://router.huggingface.co/v1/chat/completions`),
+HF's own docs describe it as a "drop-in replacement for the OpenAI chat
+completions API" and show it being called with the literal `openai` Python
+SDK pointed at HF's base URL. Text Generation Inference (the HF-maintained
+local/self-hosted inference server, llama-server's rough sibling in this
+space) implements the identical `/v1/chat/completions` shape for the same
+reason. **For the chat-completion case, "encapsulate InferenceClient" and
+"encapsulate the OpenAI-compatible API" are the same wire format** — HF
+built its chat endpoint to be OpenAI-shaped on purpose, and `InferenceClient`
+is just one more HTTP caller of that same shape, no different in kind from
+the `openai` SDK itself or from `curl`.
+
+Since APLC-1 never parses the HTTP body or knows anything about OpenAI's
+JSON schema (§2, §8), this case is already fully covered with zero
+transport changes — the same as it's already covered for the `openai` SDK,
+llama.cpp's Python bindings, or a raw `curl` call.
+
+### 6.3 Where InferenceClient goes beyond chat (and beyond this project's current scope)
+
+`InferenceClient` is a *multi-task* client: beyond chat completion, it also
+covers `text_to_image`, `automatic_speech_recognition`,
+`document_question_answering`, `zero_shot_image_classification`, and
+roughly two dozen other HF-specific task types, each hitting its own
+task-specific endpoint shape (not the `/v1/chat/completions` shape) on
+HF's Inference Providers infrastructure. `llama-server` does not implement
+any of these HF-specific task endpoints — it implements the
+OpenAI-compatible surface plus llama.cpp-specific endpoints (`/completion`,
+`/tokenize`, `/embedding`, `/infill`, etc., see the parent repo's
+`vendor/llama.cpp/tools/server/README.md`).
+
+This is **not a transport-protocol gap** — APLC-1's raw-HTTP-passthrough
+design would carry any of these task-specific request/response shapes
+exactly as transparently as it carries chat completions, since it still
+never inspects the body. It is a **backend-capability gap**: if
+`aipotluck-local-client` ever wanted to serve HF-style multi-task requests
+(image classification, ASR, etc.) from a user's local machine, that would
+require running a different/additional local backend that implements those
+endpoints (llama-server does not), which is a product-scope decision
+entirely orthogonal to this transport spec.
+
+### 6.4 Conclusion
+
+No changes to PROPOSAL.md or SPEC.md are warranted by this comparison.
+APLC-1's core design choice — carry raw HTTP bytes and never encode
+assumptions about the JSON schema riding inside them — is exactly what
+makes it already correct for InferenceClient's chat-completion traffic
+(identical to OpenAI's shape) and already extensible, with zero protocol
+changes, to InferenceClient's other task types **if** a future local
+backend implementing those task endpoints is ever added alongside
+llama-server. The transport layer was never the constraint; the set of
+HTTP endpoints the local backend exposes is.
