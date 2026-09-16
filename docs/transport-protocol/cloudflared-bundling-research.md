@@ -118,6 +118,129 @@ architecture rather than a new subsystem:
    (already scored 5/5 in `research/nat-traversal/nat-traversal-report.md`),
    not replace it.
 
+## 6. Quick Tunnel vs Named Tunnel: wrapper support and API interaction, in detail
+
+Direct answers to the two follow-up questions.
+
+### Q1: Do we lose wrapper support with a named tunnel?
+
+**No.** The subprocess-wrapping pattern (spawn, capture stdout, health-check,
+supervise/restart) is *identical* for both modes — none of the prior art in
+§1-5 changes shape based on tunnel type. What changes is only the **command
+line invoked** and **what's needed before you can invoke it**:
+
+| | Quick Tunnel | Named Tunnel (remotely-managed) |
+|---|---|---|
+| Command | `cloudflared tunnel --url http://localhost:8080` | `cloudflared tunnel run --token <TOKEN>` |
+| Config file needed? | No | No (token-only mode — see below) |
+| Account needed? | No | Yes |
+| Output to parse | Random `https://xxxx.trycloudflare.com` URL on stdout | Nothing to parse — hostname is fixed/known ahead of time |
+| Process lifecycle management | Same: `subprocess.Popen`, monitor exit code, restart on crash | Identical |
+| Supervisor code | `CloudflaredSupervisor` (as already proposed) | Same class, different argv |
+
+Critically: Cloudflare added a **third, token-based invocation** specifically to
+avoid forcing a config file (`config.yml` + `credentials-file` JSON) onto every
+deployment. `cloudflared tunnel run --token <TUNNEL_TOKEN>` is a single opaque
+JWT-like string that fully authenticates and configures the tunnel — no
+YAML file, no `cloudflared tunnel login` browser flow, no local credentials
+JSON on disk at all. This is exactly the "remotely-managed tunnel" mode and is
+what `cloudflared service install <TOKEN>` uses under the hood for the
+service-based deployments — but nothing stops us from feeding that same token
+to a plain subprocess invocation instead of the service installer. This is the
+mode that keeps our design closest to the existing wrapper pattern: one token,
+one `Popen` call, no additional local state.
+
+So: **we don't lose anything from the wrapper's perspective.** The
+`CloudflaredSupervisor` class doesn't need to know or care whether it's running
+`--url` or `run --token ...` — it's the same spawn/monitor/restart loop either
+way. The only real complexity shift is *upstream* of the subprocess call: who
+creates the tunnel and gets the token in the first place.
+
+### Q2: Will it require additional interaction with the Cloudflare API?
+
+**Yes — but it's a one-time, cloud-side operation, not something the local
+client (or its wrapper) needs to do repeatedly.** Concretely, to run a named
+tunnel you need, once per install:
+
+1. **A Cloudflare API token** with `Cloudflare Tunnel Write` (or the newer
+   equivalent `Cloudflare One Connector: cloudflared Write`) permission — this
+   is our cloud backend's credential, not the end user's.
+2. **One `POST` to create the tunnel**:
+   `POST /accounts/{account_id}/cfd_tunnel` with `{"name": "...", "config_src": "cloudflare"}`
+   → returns a tunnel `id` and a `token` in the same response body.
+3. **One `PUT` to set the ingress rule** (which local port maps to which public
+   hostname): `PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations`.
+4. **One `POST` to create the DNS record** pointing at
+   `<tunnel_id>.cfargotunnel.com` (needs a zone already onboarded to Cloudflare
+   — this is the one hard prerequisite: the *cloud* side needs a Cloudflare
+   account + domain, not the *client*).
+
+Steps 2-4 happen entirely on **our cloud/control-plane side**, driven by
+whatever backend the aipotluck cloud service already runs — this is a natural
+fit for the SvelteKit/Node cloud stack from the original transport research,
+not new infrastructure. The local installer never talks to the Cloudflare API
+directly; it only ever receives a `TUNNEL_TOKEN` string (handed to it by our
+own cloud API, analogous to how APLC-1 already issues a bearer token — see
+SPEC.md §4) and passes that straight through to `cloudflared tunnel run
+--token`.
+
+So the practical shape becomes:
+
+```
+[user installs aipotluck client]
+        |
+        v
+[client calls OUR cloud API: "register this device"]
+        |
+        v
+[our cloud API calls Cloudflare API: create tunnel + ingress + DNS record]
+(one-time, done by us, standard REST calls, no cloudflared involved at this step)
+        |
+        v
+[our cloud API returns: TUNNEL_TOKEN + APLC-1 bearer token to the client]
+        |
+        v
+[client's CloudflaredSupervisor spawns: cloudflared tunnel run --token <TUNNEL_TOKEN>]
+[client's own aipotluck_service.py opens the APLC-1 WebSocket, authenticated
+ with its own bearer token, same as if cloudflared weren't involved]
+```
+
+This means:
+
+- **The wrapper itself (`CloudflaredSupervisor`) never touches the Cloudflare
+  API.** It only ever receives a token string and an argv list — same
+  complexity as the Quick Tunnel path, just no stdout URL-parsing needed since
+  the hostname is already known.
+- **The Cloudflare API calls are all server-side**, made once per device
+  registration by our own cloud backend using Cloudflare's official REST API
+  (`cloudflare-typescript`/`cloudflare-python` SDKs both exist and would fit a
+  Node/SvelteKit or Python backend equally well) — not a new operational
+  burden per se, but it is a new integration our cloud service needs to own
+  (an API token with tunnel-write scope, tunnel lifecycle bookkeeping —
+  create on registration, presumably delete/rotate on deregistration).
+- **Token rotation is a real operational concern** worth flagging: Cloudflare
+  recommends rotating tunnel tokens regularly, and after rotation `cloudflared`
+  needs to be restarted with the new token. Our `CloudflaredSupervisor` should
+  support a "reload token and reconnect" signal (mirroring how
+  `LlamaSupervisor` already handles config-driven restarts) rather than
+  requiring a full reinstall.
+
+### Net effect on scope
+
+- **No new local dependency or install-time complexity** beyond what's already
+  planned (fetch cloudflared binary → supervise as a subprocess).
+- **One new integration point on the cloud side**: our backend must call
+  Cloudflare's Tunnel API to provision a tunnel + ingress + DNS record per
+  registered device, and hand the resulting token down through whatever
+  device-registration flow the client already uses to fetch its APLC-1 bearer
+  token. This is additive cloud-side work, not local-client work, and reuses
+  infrastructure (an outbound HTTPS API call from our own backend) the
+  SvelteKit/Node stack already has by definition.
+- **Quick Tunnels remain useful for local development/testing only** (no
+  account needed, but no SSE support and a 200-connection cap) — not a
+  candidate for production given llama-server's SSE streaming requirement
+  already noted.
+
 ## Sources
 
 1. Cloudflare — Quick Tunnels docs: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/
@@ -126,3 +249,8 @@ architecture rather than a new subsystem:
 4. `pycloudflared` (Bing-su, PyPI): https://github.com/Bing-su/pycloudflared / https://pypi.org/project/pycloudflared/
 5. `s4rrar/cloudflary` — resilient Python subprocess wrapper: https://github.com/s4rrar/cloudflary
 6. Cloudflare Community — "Cloudflared automated download" (manual GitHub Release asset-fetch pattern, checksum caveat): https://community.cloudflare.com/t/cloudflared-automated-download/418848
+7. Cloudflare — Tunnel tokens: https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/
+8. Cloudflare — Create a tunnel (API): https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/
+9. Cloudflare — Create a locally-managed tunnel: https://developers.cloudflare.com/tunnel/advanced/local-management/create-local-tunnel/
+10. Cloudflare API reference — Zero Trust Tunnels: https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/
+
