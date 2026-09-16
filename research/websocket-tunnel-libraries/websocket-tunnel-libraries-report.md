@@ -9,7 +9,10 @@ multiplexes HTTP requests from our SvelteKit/Node cloud backend down to a
 local llama-server behind an arbitrary firewall/NAT). Restricted to
 open-source projects only, sourced primarily from
 `anderspitman/awesome-tunneling` plus targeted npm/GitHub searches for
-purpose-built embeddable libraries.
+purpose-built embeddable libraries. **The local wrapper is not required to
+stay Python** — if a library's client and server share a runtime/protocol,
+rewriting the local wrapper to match is an acceptable cost, not a
+disqualifier.
 
 ## Methodology
 
@@ -37,9 +40,9 @@ aggregator scraped secondhand); URLs are listed in Sources.
 
 | Tool | Score | Language | Embeddable in existing Node server? | Client admin-free? |
 |---|---|---|---|---|
+| **h2tunnel** | 5/5 | TypeScript (zero-dep) | Yes — `TunnelServer` class, ~20-50 LOC | Yes — client is the same library, no reimplementation needed |
 | **pipenet** | 4/5 | TypeScript | Yes — server ships as importable lib | Yes |
 | **cactus-tunnel** | 4/5 | TypeScript | Yes — `Server` class, instantiable in-process | Yes (needs Node ≥22) |
-| **h2tunnel** | 4/5 | TypeScript (zero-dep) | Yes — `TunnelServer` class, ~20-50 LOC | Yes (client also Node-only) |
 | wstunnel | 3/5 | Rust | No — separate compiled binary | Yes (static binary) |
 | sish | 3/5 | Go | No — separate SSH server | Yes (plain OpenSSH client) |
 | localtunnel | 2/5 | JS (client) / stale | No — separate, unmaintained server | Yes |
@@ -57,7 +60,52 @@ aggregator scraped secondhand); URLs are listed in Sources.
 re-checked specifically for an embeddable npm server library; both passes
 converged on the same conclusion.)*
 
-## Top 3: genuinely embeddable server-side libraries
+## Top 3: genuinely embeddable server-side libraries (h2tunnel now the clear leader)
+
+### h2tunnel — Viability: 5/5
+
+**What it is.** A deliberately tiny (< 500 LOC), zero-runtime-dependency
+Node.js/TypeScript library implementing an HTTP/2 + mTLS tunnel, documented in
+a design blog post by its author (boronine.com, June 2025).[7]
+
+**Popularity and maturity.** Small but genuinely active — 142 stars, 4 forks,
+2 watchers — with CI, a test suite with coverage reporting, and recent
+dependency/security maintenance (dependabot bumps merged the same year).[7]
+Not battle-tested at scale, but the entire codebase is auditable in an
+afternoon given its size, which meaningfully lowers supply-chain risk versus a
+larger, opaque dependency.[7]
+
+**Infra lift on our SvelteKit/Node backend.** The clearest embeddable-library
+win of the whole survey: h2tunnel exports a `TunnelServer` class usable
+directly from our existing Node process — `import { TunnelServer } from
+"h2tunnel"; const server = new TunnelServer({ key, cert, tunnelListenIp,
+tunnelListenPort, proxyListenIp, proxyListenPort }); server.start();` — about
+10-20 lines to instantiate and wire lifecycle, plus a small mTLS
+cert-generation/rotation script.[7] It listens on its own TCP ports inside the
+*same* Node process; no separate deployable artifact.[7]
+
+**Client-side simplicity.** Also a plain npm library (`import { TunnelClient }
+from "h2tunnel"`) — no admin/root, no interface management, pure userspace
+outbound TLS connection.[7] Since the local wrapper is not required to stay
+Python, this removes what would otherwise be the only real friction point:
+the client is the *same* tiny library as the server, sharing its protocol,
+test suite, and maintainer — no cross-language reimplementation of anything
+is needed.[7]
+
+**LOC / admin burden.** Server-side glue: ~20-50 LOC total.[7] Client-side
+glue is comparably small (~20-50 LOC) since `TunnelClient` is the matching
+half of the same library — there is no protocol to reimplement in a
+different language.[7] Ongoing ops burden is the lowest of any option
+surveyed since the tunnel server scales/restarts with the app itself; the
+main residual risk is being one of very few consumers of a small project,
+with some chance of needing to patch it ourselves.[7]
+
+**Bottom line.** With the Python-client constraint lifted, h2tunnel is the
+strongest candidate in the entire survey: both halves of the tunnel are the
+same minimal, auditable, actively-maintained library, satisfying "no
+separate binary" on the cloud side and "no admin/root" on the client side
+simultaneously, at the cost of committing the local wrapper to a Node.js
+runtime instead of Python.[7]
 
 ### pipenet — Viability: 4/5
 
@@ -136,43 +184,6 @@ burden reduces to "one more npm dependency to keep patched."[3]
 **Caveats.** Smallest community of the top three by a wide margin — higher
 long-term abandonment risk if the single maintainer stops.[3] Small codebase
 (a few hundred LOC of core logic) makes self-patching feasible if needed.[3]
-
-### h2tunnel — Viability: 4/5
-
-**What it is.** A deliberately tiny (< 500 LOC), zero-runtime-dependency
-Node.js/TypeScript library implementing an HTTP/2 + mTLS tunnel, documented in
-a design blog post by its author (boronine.com, June 2025).[7]
-
-**Popularity and maturity.** Small but genuinely active — 142 stars, 4 forks,
-2 watchers — with CI, a test suite with coverage reporting, and recent
-dependency/security maintenance (dependabot bumps merged the same year).[7]
-Not battle-tested at scale, but the entire codebase is auditable in an
-afternoon given its size, which meaningfully lowers supply-chain risk versus a
-larger, opaque dependency.[7]
-
-**Infra lift on our SvelteKit/Node backend.** The clearest embeddable-library
-win of the whole survey: h2tunnel exports a `TunnelServer` class usable
-directly from our existing Node process — `import { TunnelServer } from
-"h2tunnel"; const server = new TunnelServer({ key, cert, tunnelListenIp,
-tunnelListenPort, proxyListenIp, proxyListenPort }); server.start();` — about
-10-20 lines to instantiate and wire lifecycle, plus a small mTLS
-cert-generation/rotation script.[7] It listens on its own TCP ports inside the
-*same* Node process; no separate deployable artifact.[7]
-
-**Client-side simplicity.** Also a plain npm library (`import { TunnelClient }
-from "h2tunnel"`) — no admin/root, no interface management, pure userspace
-outbound TLS connection.[7] The one real catch for our stack: it's Node-only,
-and our client is Python — using it as-is would mean bundling a Node runtime
-on the local machine, or reimplementing its small, well-documented HTTP/2 +
-mTLS protocol in Python (roughly 300-500 LOC using Python's `h2`/`hyper`
-libraries).[7]
-
-**LOC / admin burden.** Server-side glue: ~20-50 LOC total.[7] Client-side: a
-real but bounded tradeoff — either a Node sidecar (~50 LOC glue + packaging)
-or a Python reimplementation of the protocol.[7] Ongoing ops burden is the
-lowest of any option surveyed since the tunnel server scales/restarts with the
-app itself; the main residual risk is being one of very few consumers of a
-small project, with some chance of needing to patch it ourselves.[7]
 
 ## Mature, popular — but require a separate deployed process
 
@@ -254,41 +265,47 @@ Node at all.[5]
 
 ## Recommendation
 
-**No off-the-shelf option cleanly replaces APLC-1 wholesale**, but three
-genuinely change the calculus: **pipenet**, **cactus-tunnel**, and
-**h2tunnel** are all real, working, MIT-or-similarly-licensed libraries whose
-server-side logic can be instantiated directly inside our existing
-SvelteKit/adapter-node process — satisfying the "no separate binary" goal
-that ruled out every more mature/popular alternative (wstunnel, sish,
-tunnelite, go-http-tunnel, localtunnel, Tunnelmole, jprq, koding/tunnel all
-require deploying and operating a second service).
+**With the local wrapper no longer constrained to Python, h2tunnel is the
+clear recommendation.** All three top-tier candidates (pipenet,
+cactus-tunnel, h2tunnel) are real, working, MIT-or-similarly-licensed
+libraries whose server-side logic can be instantiated directly inside our
+existing SvelteKit/adapter-node process — satisfying the "no separate
+binary" goal that ruled out every more mature/popular alternative (wstunnel,
+sish, tunnelite, go-http-tunnel, localtunnel, Tunnelmole, jprq, koding/tunnel
+all require deploying and operating a second service). But only h2tunnel
+lets both the client and server run as the *same* small library with zero
+cross-language protocol work, which was the deciding factor once the
+Python-client requirement was lifted.
 
-Trade-offs to weigh before adopting any of the three over building APLC-1
-from scratch:
+Trade-offs to weigh before adopting h2tunnel over building APLC-1 from
+scratch:
 
-- All three are small, single-maintainer projects (58-527 stars) with no
-  long production track record — real bus-factor and long-term-maintenance
-  risk versus a protocol we design, own, and can extend ourselves.
-- **h2tunnel** is the strongest server-side fit (smallest, cleanest, most
-  actively maintained of the three) but is Node-only end-to-end — our
-  client is Python, so adopting it means either bundling a Node runtime on
-  the local machine or reimplementing its documented HTTP/2+mTLS protocol in
-  Python (~300-500 LOC), which is a non-trivial chunk of the very custom
-  work we'd be trying to avoid.
-- **pipenet** and **cactus-tunnel** both ship a JS/TS *client* too, so the
-  same "our client is Python, not Node" friction applies to all three —
-  none of them has an existing Python client, meaning some client-side
-  reimplementation work is unavoidable regardless of which we pick.
-- Given that unavoidable client-side work, the realistic option is either
-  (a) vendor/fork one of these three server libraries to shortcut the
-  server-side half of APLC-1 while still writing our own Python client
-  against its protocol, or (b) treat all three purely as *design reference*
+- All three top-tier candidates are small, single-maintainer projects
+  (58-527 stars) with no long production track record — real bus-factor and
+  long-term-maintenance risk versus a protocol we design, own, and can
+  extend ourselves. h2tunnel's codebase is small enough (< 500 LOC) that
+  self-patching/forking is realistic if the upstream maintainer stops.
+- Adopting h2tunnel means the local wrapper is rewritten from Python to
+  Node.js/TypeScript to match — a real one-time engineering cost, but a
+  bounded and now explicitly acceptable one. This buys us a client and
+  server that share the exact same library, protocol, and test suite,
+  eliminating the reimplementation work that would otherwise be required.
+- pipenet and cactus-tunnel remain reasonable fallbacks if h2tunnel's small
+  community or narrower feature set (pure HTTP/2 tunnel, no built-in
+  subdomain routing) turns out to be a poor fit once we dig into
+  implementation details — both have the same "embed server in Node
+  process" property, at a similar single-maintainer risk level.
+- The realistic paths forward are now: (a) adopt h2tunnel directly (rewrite
+  the local wrapper in Node.js, embed `TunnelServer` in our SvelteKit
+  backend), (b) vendor/fork h2tunnel if we need protocol extensions it
+  doesn't already support, or (c) treat all three as *design reference*
   (embeddable-library architecture, lifecycle-hook patterns, mTLS approach)
-  and continue building APLC-1 fully custom as already spec'd.
+  and continue building APLC-1 fully custom if a deeper implementation dive
+  turns up a dealbreaker.
 - Given the small scale of all three candidate projects, forking/vendoring
   carries about the same long-term maintenance burden as building from
   scratch — the main thing genuinely saved is initial development time on
-  the server-side WebSocket/HTTP-multiplexing plumbing, not ongoing
+  the request-multiplexing/HTTP-over-tunnel plumbing, not ongoing
   maintenance burden.
 
 ## Sources

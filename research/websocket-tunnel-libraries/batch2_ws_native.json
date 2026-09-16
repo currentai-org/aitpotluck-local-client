@@ -13,7 +13,10 @@
     "loc_estimate_and_admin_burden": "Low integration LOC in theory (spawn subprocess, or use as a library via Rust crate - not usable from Node directly), but real burden is operational: packaging and distributing a 3rd-party binary for our Python-wrapped client, running/monitoring/restarting a separate server binary in our cloud infra, managing TLS certs and reverse-proxy compatibility (wstunnel explicitly warns it can be finicky behind Nginx/Cloudflare/HAProxy - a real risk since our SvelteKit backend likely sits behind exactly such infra), and diagnosing issues in a Rust codebase we don't own. Roughly: 1-2 days integration/deployment work, plus ongoing binary-update and incident-response burden indefinitely.",
     "viability_score_1_to_5": 3,
     "viability_notes": "Most mature, most popular, and most feature-complete of the four, with genuinely non-root client behavior - but it fundamentally requires deploying and operating a separate compiled server process in our cloud environment, which directly conflicts with our 'no separate relay binary, embed in existing Node process' priority. Also carries real risk of friction with our existing reverse-proxy/Nginx/Cloudflare-fronted SvelteKit deployment. Best used only if we're willing to accept a small dedicated sidecar service.",
-    "sources": ["https://github.com/erebe/wstunnel", "https://github.com/erebe/wstunnel/releases"]
+    "sources": [
+      "https://github.com/erebe/wstunnel",
+      "https://github.com/erebe/wstunnel/releases"
+    ]
   },
   {
     "name": "jprq",
@@ -29,7 +32,9 @@
     "loc_estimate_and_admin_burden": "Similar to wstunnel in shape: we'd need to fork/self-host the Go server (public service gated), build/maintain that binary in our infra, and write a Node bridge from our SvelteKit backend to the tunnel server. Given no active public maintenance since 2023 and unclear license, ongoing burden includes forking and patching bugs ourselves with no upstream support to lean on. Estimate 2-3+ days integration/hardening plus indefinite self-maintenance of a stale codebase.",
     "viability_score_1_to_5": 1,
     "viability_notes": "Same 'separate relay binary' infra burden as wstunnel but with worse maturity signals: no clear license, apparent stalled development, and its hosted service pivoted to paid/members-only in 2023, meaning we'd be adopting an effectively unmaintained project and would own all future bugfixes ourselves. Not recommended.",
-    "sources": ["https://github.com/azimjohn/jprq"]
+    "sources": [
+      "https://github.com/azimjohn/jprq"
+    ]
   },
   {
     "name": "cactus-tunnel",
@@ -44,8 +49,10 @@
     "client_side_simplicity": "Client is `cactus-tunnel client <server> <target>`, distributed via npm, so the end-user machine needs Node.js >=22 installed (not a zero-dependency static binary like the Rust/Go tools) but runs as a normal unprivileged CLI process - no admin/root, no virtual network interfaces, no elevated capabilities. It also has a 'bridge mode' where the WebSocket relay can literally run inside a browser tab, which is a novel low-privilege option, though impractical for our headless llama-server use case. Requiring Node.js as a prerequisite is the main friction point versus wstunnel/jprq's zero-dependency static binaries - if our Python client wrapper doesn't already assume Node.js is present, this is an extra install step (still non-admin, but an added dependency).",
     "loc_estimate_and_admin_burden": "Lowest integration burden of the four for OUR architecture: the server piece is an importable class we can instantiate directly inside our existing SvelteKit/Node backend (roughly tens of lines of glue code to wire it into our existing HTTP server/auth/routing), no separate process to run, monitor, or restart, no extra TLS/cert management (reuses our existing HTTPS termination). Ops burden reduces to 'one more npm dependency to keep patched' rather than 'a second service in our fleet'. Main downside is small community size means we may need to read/patch its source ourselves for edge cases (small codebase makes this feasible - core logic is a few hundred LOC per its own file layout).",
     "viability_score_1_to_5": 4,
-    "viability_notes": "Best infra fit of the four for our stated priorities: the server embeds directly in our existing Node/SvelteKit process (no separate relay binary/process to run or monitor), the client is unprivileged and admin-free, and it's MIT-licensed and actively developed. The tradeoffs are its small scale/community (58 stars, single maintainer, higher abandonment risk long-term) and that the client requires Node.js >=22 rather than being a zero-dependency static binary - both manageable given our use case and our team's Node/TS fluency, making it the strongest off-the-shelf candidate to evaluate further or fork/vendor.",
-    "sources": ["https://github.com/jeffreytse/cactus-tunnel"]
+    "viability_notes": "Best infra fit of the four for our stated priorities: the server embeds directly in our existing Node/SvelteKit process (no separate relay binary/process to run or monitor), the client is unprivileged and admin-free, and it's MIT-licensed and actively developed. Since the local wrapper is not constrained to Python, requiring Node.js >=22 on the client is a non-issue rather than a tradeoff \u2014 client and server share the same runtime and library. The main remaining tradeoff is its small scale/community (58 stars, single maintainer, higher abandonment risk long-term), making it a strong off-the-shelf candidate to evaluate further or fork/vendor.",
+    "sources": [
+      "https://github.com/jeffreytse/cactus-tunnel"
+    ]
   },
   {
     "name": "tunnelite",
@@ -61,6 +68,8 @@
     "loc_estimate_and_admin_burden": "Highest overall admin burden of the four for our stack: requires standing up and operating an entirely separate .NET/ASP.NET Core service (with its own runtime, TLS/wildcard cert management, DNS, deployment pipeline, and monitoring), that our team would need .NET operational familiarity to run well, on top of our existing SvelteKit/Node infra. Integration LOC on the client side is modest (spawn the CLI or shell out from Python), but cloud-side burden is a full second stack to maintain indefinitely - self-hosting docs literally point to Azure App Service as the reference deployment, implying it isn't trivially portable to arbitrary Node-hosting infra.",
     "viability_score_1_to_5": 2,
     "viability_notes": "Technically the most actively-developed and well-tested project of the four (fresh commits, real CI/integration-test suite, hosted SaaS option), and the client is appropriately unprivileged - but it fails our core infra requirement hardest, since the server is a full separate .NET/SignalR stack with its own runtime, wildcard cert/DNS needs, and deployment model, adding an entirely new technology stack to operate. Worth reconsidering only if we're open to using their hosted tunnelite.com SaaS service directly rather than self-hosting the server ourselves.",
-    "sources": ["https://github.com/cristipufu/tunnelite"]
+    "sources": [
+      "https://github.com/cristipufu/tunnelite"
+    ]
   }
 ]
