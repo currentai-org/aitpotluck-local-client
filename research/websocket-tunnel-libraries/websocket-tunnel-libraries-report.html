@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>websocket-tunnel-libraries-report</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#5a6570; --accent:#0f6b5c; --line:#d8dee4; --chip:#eef3f1; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.65 Georgia, 'Times New Roman', serif; color: var(--ink);
+         max-width: 900px; margin: 0 auto; padding: 48px 28px 80px; background:#fff; }
+  h1,h2,h3,h4 { font-family: 'Helvetica Neue', Arial, sans-serif; line-height:1.25; color:#10241f; }
+  h1 { font-size: 1.9rem; border-bottom: 3px solid var(--accent); padding-bottom: .4rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.2rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.6rem; }
+  em { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1.2rem 0;
+           font-family:'Helvetica Neue',Arial,sans-serif; font-size: .82rem; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--chip); font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  .cite { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.68em;
+           color: var(--accent); font-weight:600; }
+  .unverified { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.72em; color:#a15c00;
+                 font-weight:600; border:1px solid #e6c48a; border-radius:3px;
+                 padding:0 4px; background:#fdf6ea; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+  blockquote { border-left: 3px solid var(--accent); margin-left: 0;
+                padding-left: 1rem; color: var(--muted); }
+  li { margin: .25rem 0; }
+  strong { color: #0d1f1b; }
+  @media print { body { padding: 0; font-size: 12.5px; }
+                  h2 { page-break-after: avoid; } table { page-break-inside: auto; } }
+</style>
+</head>
+<body>
+<h1>Open-Source WebSocket/Reverse-Tunnel Libraries — Survey vs. APLC-1</h1>
+<h2>Objective</h2>
+<p>Wide, open-source-only survey of existing reverse-proxy-over-WebSocket (and
+adjacent reverse-tunnel) tools, to check whether any could replace or reduce
+scope in our custom APLC-1 transport (a WebSocket-based reverse tunnel that
+multiplexes HTTP requests from our SvelteKit/Node cloud backend down to a
+local llama-server behind an arbitrary firewall/NAT). Restricted to
+open-source projects only, sourced primarily from
+<code>anderspitman/awesome-tunneling</code> plus targeted npm/GitHub searches for
+purpose-built embeddable libraries.</p>
+<h2>Methodology</h2>
+<p>17 candidates were evaluated in 4 parallel research passes, each scored
+1-5 on the same four axes the user specified:</p>
+<ol>
+<li><strong>Popularity and maturity</strong> — stars, commit recency, maintainer count,
+   red flags (abandonment, license ambiguity, stalled hosted services).</li>
+<li><strong>Infra lift on our SvelteKit/Node backend</strong> — can the server-side piece
+   run embedded as a library inside our existing Node process, or does it
+   require deploying/monitoring a wholly separate binary/service? Solutions
+   requiring a separate binary were deprioritized per the user's explicit
+   instruction, not eliminated.</li>
+<li><strong>Client-side simplicity</strong> — no admin/root, no network interface/TUN
+   management, no special installation beyond an ordinary unprivileged
+   process.</li>
+<li><strong>Lines of code / administrative burden</strong> — rough integration LOC and
+   ongoing operational load (a second service to patch/monitor vs. "one more
+   npm dependency").</li>
+</ol>
+<p>Every candidate was checked against its own GitHub/npm page directly (no
+aggregator scraped secondhand); URLs are listed in Sources.</p>
+<h2>At a glance</h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Score</th>
+<th>Language</th>
+<th>Embeddable in existing Node server?</th>
+<th>Client admin-free?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pipenet</strong></td>
+<td>4/5</td>
+<td>TypeScript</td>
+<td>Yes — server ships as importable lib</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>cactus-tunnel</strong></td>
+<td>4/5</td>
+<td>TypeScript</td>
+<td>Yes — <code>Server</code> class, instantiable in-process</td>
+<td>Yes (needs Node ≥22)</td>
+</tr>
+<tr>
+<td><strong>h2tunnel</strong></td>
+<td>4/5</td>
+<td>TypeScript (zero-dep)</td>
+<td>Yes — <code>TunnelServer</code> class, ~20-50 LOC</td>
+<td>Yes (client also Node-only)</td>
+</tr>
+<tr>
+<td>wstunnel</td>
+<td>3/5</td>
+<td>Rust</td>
+<td>No — separate compiled binary</td>
+<td>Yes (static binary)</td>
+</tr>
+<tr>
+<td>sish</td>
+<td>3/5</td>
+<td>Go</td>
+<td>No — separate SSH server</td>
+<td>Yes (plain OpenSSH client)</td>
+</tr>
+<tr>
+<td>localtunnel</td>
+<td>2/5</td>
+<td>JS (client) / stale</td>
+<td>No — separate, unmaintained server</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Tunnelmole</td>
+<td>2/5</td>
+<td>TypeScript</td>
+<td>No — separate service (hosted or self-run)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>tunnelite</td>
+<td>2/5</td>
+<td>C#/.NET</td>
+<td>No — separate .NET/SignalR stack</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>go-http-tunnel</td>
+<td>2/5</td>
+<td>Go</td>
+<td>No — separate binary; <strong>AGPL-3.0 licensing risk</strong></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>primus (npm)</td>
+<td>2/5</td>
+<td>JS</td>
+<td>N/A — not a tunnel tool, just a transport primitive</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>progrium/localtunnel</td>
+<td>1/5</td>
+<td>Go</td>
+<td>No — no server implementation exists at all</td>
+<td>No (Go toolchain required)</td>
+</tr>
+<tr>
+<td>jprq</td>
+<td>1/5</td>
+<td>Go</td>
+<td>No — separate binary; hosted service gated in 2023</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>koding/tunnel</td>
+<td>1/5</td>
+<td>Go (library)</td>
+<td>No — Go-only, unusable from Node; abandoned since 2017</td>
+<td>Yes (but needs Go binary)</td>
+</tr>
+<tr>
+<td>http-proxy (npm)</td>
+<td>1/5</td>
+<td>JS</td>
+<td>N/A — generic proxy, not a NAT tunnel at all</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>yamux (npm)</td>
+<td>1/5</td>
+<td>JS</td>
+<td>N/A — dead package, unrelated to real Yamux protocol</td>
+<td>N/A</td>
+</tr>
+</tbody>
+</table>
+<p><em>(localtunnel/tunnelmole appear twice — once evaluated as CLI tools, once
+re-checked specifically for an embeddable npm server library; both passes
+converged on the same conclusion.)</em></p>
+<h2>Top 3: genuinely embeddable server-side libraries</h2>
+<h3>pipenet — Viability: 4/5</h3>
+<p><strong>What it is.</strong> A modernized, TypeScript/ESM fork of localtunnel,
+purpose-built for cloud/container deployment scenarios (Fly.io, Docker,
+Kubernetes) where only a single port can be exposed.<sup class="cite">[11]</sup> It is sponsored by
+glama.ai.<sup class="cite">[11]</sup> It is used internally to power the author's <code>mcp-proxy</code>
+project.<sup class="cite">[11]</sup></p>
+<p><strong>Popularity and maturity.</strong> It is young — 527 stars, 24 forks, 44
+commits.<sup class="cite">[11]</sup> It has a single primary author (Frank Fiegel / punkpeye).<sup class="cite">[11]</sup>
+There is no long track record, but the design intent
+(single-shared-tunnel-port mode) maps directly onto how a containerized
+SvelteKit backend is typically deployed.<sup class="cite">[11]</sup></p>
+<p><strong>Infra lift on our SvelteKit/Node backend.</strong> The standout feature: both
+client and server ship as importable JS/TS APIs in one npm package.<sup class="cite">[11]</sup> Server
+side: <code>import { createServer } from 'pipenet/server'; const server =
+createServer({...}); server.listen(3000)</code> returns a Node <code>http.Server</code>-like
+object.<sup class="cite">[11]</sup> That object can run embedded alongside our existing adapter-node
+SvelteKit server, with lifecycle hooks (<code>onTunnelCreated</code>, <code>onTunnelClosed</code>,
+<code>onRequest</code>) to integrate our own auth/logging.<sup class="cite">[11]</sup> It also explicitly
+supports single-shared-port mode for exactly our kind of cloud deployment.<sup class="cite">[11]</sup></p>
+<p><strong>Client-side simplicity.</strong> It is fully unprivileged: <code>npm install pipenet</code>
+then <code>npx pipenet client --port 3000</code> or the programmatic client API.<sup class="cite">[11]</sup> No
+admin/root, no interface configuration is needed, per the project's explicit
+zero-setup design goal.<sup class="cite">[11]</sup></p>
+<p><strong>LOC / admin burden.</strong> Roughly 150-300 LOC would be needed to mount
+<code>createServer</code> inside our existing Node HTTP server and wire lifecycle hooks
+into our auth/routing layer, plus ~50-100 LOC of client glue.<sup class="cite">[11]</sup> Ongoing
+burden is much lower than binary-based options since there's no separate
+always-on relay service to operate — only our own domain(s) and the process we
+already monitor.<sup class="cite">[11]</sup></p>
+<p><strong>Caveats.</strong> License terms in the extracted README were not explicitly
+confirmed as MIT (generic "License" link, not directly verified) — check the
+actual <code>LICENSE</code> file before adopting.<sup class="cite">[11]</sup> It is a small single-maintainer
+project with no long-term maintenance track record yet.<sup class="cite">[11]</sup></p>
+<h3>cactus-tunnel — Viability: 4/5</h3>
+<p><strong>What it is.</strong> A pure Node.js/TypeScript tunnel tool built on Express,
+<code>websocket-stream</code>, <code>pump</code>, and <code>winston</code>.<sup class="cite">[3]</sup> Actively developed, including a
+recent "Bridge Mode Web UI" feature (requires Node.js ≥22).<sup class="cite">[3]</sup></p>
+<p><strong>Popularity and maturity.</strong> The smallest community of the top three — 58
+stars, 7 forks, 1 watcher, single maintainer (jeffreytse).<sup class="cite">[3]</sup> It shows real
+recent feature work, a Jest test suite, and a passing CI badge — not
+abandoned.<sup class="cite">[3]</sup> No evidence of large-scale production adoption exists.<sup class="cite">[3]</sup></p>
+<p><strong>Infra lift on our SvelteKit/Node backend.</strong> Its server mode
+(<code>cactusTunnel.Server</code>) is explicitly importable and instantiable as a plain
+JS/TS object — <code>new cactusTunnel.Server({ listen: {...} })</code> — meaning the
+tunnel-server logic runs embedded inside our existing Node/SvelteKit HTTP
+process rather than as a separate OS binary.<sup class="cite">[3]</sup> This directly satisfies the
+"no separate relay binary" priority: it's just another <code>package.json</code>
+dependency sharing our existing TLS termination and deploy/monitoring
+pipeline.<sup class="cite">[3]</sup></p>
+<p><strong>Client-side simplicity.</strong> <code>cactus-tunnel client &lt;server&gt; &lt;target&gt;</code> via npm —
+unprivileged, no admin/root, no virtual network interfaces.<sup class="cite">[3]</sup> Requires
+Node.js ≥22 on the client machine (not a zero-dependency static binary like
+the Rust/Go options) — the one real friction point versus wstunnel/sish's
+compiled binaries.<sup class="cite">[3]</sup> It also has a novel "bridge mode" where the relay can
+run inside a browser tab, though that's not applicable to a headless
+llama-server client.<sup class="cite">[3]</sup></p>
+<p><strong>LOC / admin burden.</strong> Lowest integration burden of all 17 candidates for our
+specific architecture: the server is an importable class, roughly tens of
+lines of glue code to wire into our existing HTTP server/auth/routing, no
+separate process to run or restart, no extra TLS/cert management.<sup class="cite">[3]</sup> Ops
+burden reduces to "one more npm dependency to keep patched."<sup class="cite">[3]</sup></p>
+<p><strong>Caveats.</strong> Smallest community of the top three by a wide margin — higher
+long-term abandonment risk if the single maintainer stops.<sup class="cite">[3]</sup> Small codebase
+(a few hundred LOC of core logic) makes self-patching feasible if needed.<sup class="cite">[3]</sup></p>
+<h3>h2tunnel — Viability: 4/5</h3>
+<p><strong>What it is.</strong> A deliberately tiny (&lt; 500 LOC), zero-runtime-dependency
+Node.js/TypeScript library implementing an HTTP/2 + mTLS tunnel, documented in
+a design blog post by its author (boronine.com, June 2025).<sup class="cite">[7]</sup></p>
+<p><strong>Popularity and maturity.</strong> Small but genuinely active — 142 stars, 4 forks,
+2 watchers — with CI, a test suite with coverage reporting, and recent
+dependency/security maintenance (dependabot bumps merged the same year).<sup class="cite">[7]</sup>
+Not battle-tested at scale, but the entire codebase is auditable in an
+afternoon given its size, which meaningfully lowers supply-chain risk versus a
+larger, opaque dependency.<sup class="cite">[7]</sup></p>
+<p><strong>Infra lift on our SvelteKit/Node backend.</strong> The clearest embeddable-library
+win of the whole survey: h2tunnel exports a <code>TunnelServer</code> class usable
+directly from our existing Node process — <code>import { TunnelServer } from
+"h2tunnel"; const server = new TunnelServer({ key, cert, tunnelListenIp,
+tunnelListenPort, proxyListenIp, proxyListenPort }); server.start();</code> — about
+10-20 lines to instantiate and wire lifecycle, plus a small mTLS
+cert-generation/rotation script.<sup class="cite">[7]</sup> It listens on its own TCP ports inside the
+<em>same</em> Node process; no separate deployable artifact.<sup class="cite">[7]</sup></p>
+<p><strong>Client-side simplicity.</strong> Also a plain npm library (<code>import { TunnelClient }
+from "h2tunnel"</code>) — no admin/root, no interface management, pure userspace
+outbound TLS connection.<sup class="cite">[7]</sup> The one real catch for our stack: it's Node-only,
+and our client is Python — using it as-is would mean bundling a Node runtime
+on the local machine, or reimplementing its small, well-documented HTTP/2 +
+mTLS protocol in Python (roughly 300-500 LOC using Python's <code>h2</code>/<code>hyper</code>
+libraries).<sup class="cite">[7]</sup></p>
+<p><strong>LOC / admin burden.</strong> Server-side glue: ~20-50 LOC total.<sup class="cite">[7]</sup> Client-side: a
+real but bounded tradeoff — either a Node sidecar (~50 LOC glue + packaging)
+or a Python reimplementation of the protocol.<sup class="cite">[7]</sup> Ongoing ops burden is the
+lowest of any option surveyed since the tunnel server scales/restarts with the
+app itself; the main residual risk is being one of very few consumers of a
+small project, with some chance of needing to patch it ourselves.<sup class="cite">[7]</sup></p>
+<h2>Mature, popular — but require a separate deployed process</h2>
+<h3>wstunnel — Viability: 3/5</h3>
+<p>The most mature and popular of all 17 candidates: ~7.0k stars, active Rust
+codebase (rewritten from Haskell for maintainability), dedicated docs site,
+public demo, commercial sponsorship.<sup class="cite">[1]</sup> Genuinely non-root client behavior — a
+single static binary, no virtual network interfaces.<sup class="cite">[1]</sup> But it is not an
+embeddable Node library at all: the server must run as a separate compiled
+Rust binary/process, requiring its own systemd/container lifecycle, TLS cert
+management, and port exposure — directly conflicting with the "embed in
+existing Node process" priority.<sup class="cite">[1]</sup> The project also explicitly warns it can
+be finicky behind Nginx/Cloudflare/HAProxy, a real risk given our SvelteKit
+backend likely sits behind similar infrastructure.<sup class="cite">[1]</sup></p>
+<h3>sish — Viability: 3/5</h3>
+<p>The most popular Go option (4.7k stars) and the best client-side experience of
+the entire survey: the client is literally just OpenSSH (<code>ssh -R
+80:localhost:8080 tuns.sh</code>), already present on virtually every OS — zero
+custom binary, zero admin/root.<sup class="cite">[5]</sup> But it fails the infra-lift priority
+hardest among the "mature" tier: sish is a standalone Go SSH server that must
+run as its own long-lived process with SSH host-key management, its own TLS
+lifecycle, and wildcard DNS — a whole new infra component, not embeddable in
+Node at all.<sup class="cite">[5]</sup></p>
+<h2>Other mature options ruled out on infra or licensing grounds</h2>
+<ul>
+<li><strong>tunnelite</strong> (2/5) — most actively developed of the "separate binary" tier (commits within days of this survey, real CI/integration-test suite, hosted SaaS option) and unprivileged client, but its server is a full C#/.NET + SignalR/ASP.NET Core stack — an entirely different runtime from our Node/Python stack, with its own wildcard-cert/DNS requirements and a reference deployment pinned to Azure App Service.<sup class="cite">[4]</sup> Worth reconsidering only if we're open to using their hosted <code>tunnelite.com</code> SaaS directly rather than self-hosting.<sup class="cite">[4]</sup></li>
+<li><strong>go-http-tunnel</strong> (2/5) — solid HTTP/2-multiplexing design and decent
+  adoption (3.3k stars), but two disqualifiers: it requires deploying a
+  separate Go binary, and its <strong>AGPL-3.0 license would legally obligate us to
+  release our integration source</strong> (or purchase the author's enterprise
+  license) since we'd be offering it as part of a network service — a real
+  business/legal decision, not just an engineering one.<sup class="cite">[8]</sup><sup class="cite">[17]</sup> Maintenance
+  has also slowed to occasional dependency bumps rather than active feature
+  work.<sup class="cite">[8]</sup><sup class="cite">[17]</sup></li>
+<li><strong>localtunnel</strong> (2/5) — 22.5k stars reflects historical name recognition,
+  not current health.<sup class="cite">[9]</sup> The npm client hasn't shipped in ~5 years.<sup class="cite">[13]</sup> Its
+  commit history shows the same pattern — meaningful activity stopped years
+  ago.<sup class="cite">[15]</sup> The public hosted <code>localtunnel.me</code> server is known to be
+  unreliable.<sup class="cite">[9]</sup> The server-side code lives in a separate repo,
+  <code>localtunnel/server</code>, and is not embeddable middleware — it's a standalone
+  service needing wildcard DNS and dynamic port allocation.<sup class="cite">[18]</sup> A second,
+  dedicated pass specifically checking for an embeddable npm server library
+  confirmed the same conclusion.<sup class="cite">[9]</sup> It additionally found the wire protocol
+  is raw TCP/HTTP-CONNECT-style, not an actual WebSocket upgrade, and no
+  Python client exists.<sup class="cite">[18]</sup></li>
+<li><strong>Tunnelmole</strong> (2/5) — more actively maintained than localtunnel (recent
+  npm releases, a dashboard, CI), and its <em>client</em> is trivially embeddable
+  as a Node dependency, but that's the wrong side for our architecture — we
+  need the server logic embedded in our SvelteKit backend, and the actual
+  tunnel server (<code>tunnelmole-service</code>) is a separate, non-embeddable
+  self-hosted service, architecturally identical to localtunnel's.<sup class="cite">[10]</sup><sup class="cite">[14]</sup>
+  No Python client exists.<sup class="cite">[10]</sup><sup class="cite">[14]</sup></li>
+<li><strong>jprq</strong> (1/5) — same "separate relay binary" infra burden as wstunnel, with materially worse maturity signals: no LICENSE file at all (treat as unlicensed/all-rights-reserved by default), and its hosted service (<code>jprq.io</code>) pivoted to a paid, members-only model in October 2023 with no clear activity since — effectively an abandoned free path.<sup class="cite">[2]</sup></li>
+<li><strong>koding/tunnel</strong> (1/5) — technically a Go <em>library</em>, but "library" only
+  helps if the consuming backend is also written in Go; since ours is
+  Node.js, there is no in-process interop path at all, so it carries the
+  same "separate process" burden as any other Go tool. Compounding that: the
+  project has had zero commits since June 2017, and its own README warns
+  "under active development, please vendor it if you want to use it" — a
+  red flag even when it <em>was</em> current.<sup class="cite">[6]</sup><sup class="cite">[16]</sup></li>
+</ul>
+<h2>Not a fit at all — no server implementation, or not actually a tunnel</h2>
+<ul>
+<li><strong>progrium/localtunnel</strong> (1/5) — the historically important original that inspired ngrok and the entire localtunnel.me lineage, but its own author explicitly declares it unmaintained/legacy in the README, calling it kept "mainly to archive project history."<sup class="cite">[12]</sup> The current v3 rewrite has <em>no public server implementation at all</em>, no npm/JS bindings (Go-only), and no prebuilt cross-platform client binaries — offering essentially zero direct integration value beyond historical/architectural inspiration.<sup class="cite">[12]</sup></li>
+<li><strong>http-proxy / node-http-proxy</strong> (1/5) — extremely mature and widely used
+  (3,347 npm dependents), but it does not implement the reverse-tunnel
+  pattern at all: it's a generic forward reverse-proxy that assumes the
+  proxy process already has direct network access to a known target — it
+  has no concept of a persistent, client-initiated tunnel connection through
+  which requests get multiplexed to a NAT'd client. Included here only
+  because it repeatedly surfaces in "websocket reverse proxy npm" searches;
+  not usable as-is for NAT traversal.<sup class="cite">[21]</sup><sup class="cite">[22]</sup></li>
+<li><strong>primus</strong> (2/5) — a mature, long-lived real-time transport abstraction (like Socket.IO) with a genuinely useful built-in reconnect/heartbeat protocol, but it is a pub/sub messaging layer, not a reverse-tunnel or HTTP-multiplexing mechanism.<sup class="cite">[23]</sup> Trivial to attach to an existing <code>http.Server</code> (5-10 LOC), but using it would still mean building essentially all of APLC-1's request-multiplexing/routing logic ourselves on top of it — it would only be useful as a reconnect/heartbeat primitive to borrow from, not a ready-made solution.<sup class="cite">[23]</sup></li>
+<li><strong>yamux (npm)</strong> (1/5) — a genuine stream-multiplexing library in concept (the right general shape for multiplexing many HTTP requests down one WebSocket), but the npm package is a 13-year-old proof-of-concept requiring Node v0.10.x, has zero dependents, and — despite the name — is <strong>unrelated to HashiCorp's actual Yamux protocol</strong> used in libp2p/Consul.<sup class="cite">[20]</sup> Confirms there is no mature, modern npm library implementing true stream-multiplexing-over-WebSocket ready to embed.<sup class="cite">[20]</sup></li>
+</ul>
+<h2>Recommendation</h2>
+<p><strong>No off-the-shelf option cleanly replaces APLC-1 wholesale</strong>, but three
+genuinely change the calculus: <strong>pipenet</strong>, <strong>cactus-tunnel</strong>, and
+<strong>h2tunnel</strong> are all real, working, MIT-or-similarly-licensed libraries whose
+server-side logic can be instantiated directly inside our existing
+SvelteKit/adapter-node process — satisfying the "no separate binary" goal
+that ruled out every more mature/popular alternative (wstunnel, sish,
+tunnelite, go-http-tunnel, localtunnel, Tunnelmole, jprq, koding/tunnel all
+require deploying and operating a second service).</p>
+<p>Trade-offs to weigh before adopting any of the three over building APLC-1
+from scratch:</p>
+<ul>
+<li>All three are small, single-maintainer projects (58-527 stars) with no
+  long production track record — real bus-factor and long-term-maintenance
+  risk versus a protocol we design, own, and can extend ourselves.</li>
+<li><strong>h2tunnel</strong> is the strongest server-side fit (smallest, cleanest, most
+  actively maintained of the three) but is Node-only end-to-end — our
+  client is Python, so adopting it means either bundling a Node runtime on
+  the local machine or reimplementing its documented HTTP/2+mTLS protocol in
+  Python (~300-500 LOC), which is a non-trivial chunk of the very custom
+  work we'd be trying to avoid.</li>
+<li><strong>pipenet</strong> and <strong>cactus-tunnel</strong> both ship a JS/TS <em>client</em> too, so the
+  same "our client is Python, not Node" friction applies to all three —
+  none of them has an existing Python client, meaning some client-side
+  reimplementation work is unavoidable regardless of which we pick.</li>
+<li>Given that unavoidable client-side work, the realistic option is either
+  (a) vendor/fork one of these three server libraries to shortcut the
+  server-side half of APLC-1 while still writing our own Python client
+  against its protocol, or (b) treat all three purely as <em>design reference</em>
+  (embeddable-library architecture, lifecycle-hook patterns, mTLS approach)
+  and continue building APLC-1 fully custom as already spec'd.</li>
+<li>Given the small scale of all three candidate projects, forking/vendoring
+  carries about the same long-term maintenance burden as building from
+  scratch — the main thing genuinely saved is initial development time on
+  the server-side WebSocket/HTTP-multiplexing plumbing, not ongoing
+  maintenance burden.</li>
+</ul>
+<h2>Sources</h2>
+<p><sup class="cite">[1]</sup> <a href="https://github.com/erebe/wstunnel">https://github.com/erebe/wstunnel</a>
+<sup class="cite">[2]</sup> <a href="https://github.com/azimjohn/jprq">https://github.com/azimjohn/jprq</a>
+<sup class="cite">[3]</sup> <a href="https://github.com/jeffreytse/cactus-tunnel">https://github.com/jeffreytse/cactus-tunnel</a>
+<sup class="cite">[4]</sup> <a href="https://github.com/cristipufu/tunnelite">https://github.com/cristipufu/tunnelite</a>
+<sup class="cite">[5]</sup> <a href="https://github.com/antoniomika/sish">https://github.com/antoniomika/sish</a>
+<sup class="cite">[6]</sup> <a href="https://github.com/koding/tunnel">https://github.com/koding/tunnel</a>
+<sup class="cite">[7]</sup> <a href="https://github.com/boronine/h2tunnel">https://github.com/boronine/h2tunnel</a>
+<sup class="cite">[8]</sup> <a href="https://github.com/mmatczuk/go-http-tunnel">https://github.com/mmatczuk/go-http-tunnel</a>
+<sup class="cite">[9]</sup> <a href="https://github.com/localtunnel/localtunnel">https://github.com/localtunnel/localtunnel</a> — localtunnel/localtunnel GitHub
+<sup class="cite">[10]</sup> <a href="https://github.com/robbie-cahill/tunnelmole-client">https://github.com/robbie-cahill/tunnelmole-client</a> — tunnelmole-client GitHub
+<sup class="cite">[11]</sup> <a href="https://github.com/punkpeye/pipenet">https://github.com/punkpeye/pipenet</a> — pipenet GitHub
+<sup class="cite">[12]</sup> <a href="https://github.com/progrium/localtunnel">https://github.com/progrium/localtunnel</a> — progrium/localtunnel GitHub
+<sup class="cite">[13]</sup> <a href="https://www.npmjs.com/package/localtunnel">https://www.npmjs.com/package/localtunnel</a> — localtunnel npm
+<sup class="cite">[14]</sup> <a href="https://www.npmjs.com/package/tunnelmole">https://www.npmjs.com/package/tunnelmole</a> — tunnelmole npm
+<sup class="cite">[15]</sup> <a href="https://github.com/localtunnel/localtunnel/commits/master">https://github.com/localtunnel/localtunnel/commits/master</a> — localtunnel commits
+<sup class="cite">[16]</sup> <a href="https://github.com/koding/tunnel/commits/master">https://github.com/koding/tunnel/commits/master</a>
+<sup class="cite">[17]</sup> <a href="https://github.com/mmatczuk/go-http-tunnel/commits/master">https://github.com/mmatczuk/go-http-tunnel/commits/master</a>
+<sup class="cite">[18]</sup> <a href="https://github.com/localtunnel/server">https://github.com/localtunnel/server</a>
+<sup class="cite">[20]</sup> <a href="https://www.npmjs.com/package/yamux">https://www.npmjs.com/package/yamux</a>
+<sup class="cite">[21]</sup> <a href="https://www.npmjs.com/package/http-proxy">https://www.npmjs.com/package/http-proxy</a>
+<sup class="cite">[22]</sup> <a href="https://www.npmjs.com/package/node-http-proxy">https://www.npmjs.com/package/node-http-proxy</a>
+<sup class="cite">[23]</sup> <a href="https://www.npmjs.com/package/primus">https://www.npmjs.com/package/primus</a></p>
+</body>
+</html>
