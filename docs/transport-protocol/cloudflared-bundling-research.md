@@ -241,6 +241,122 @@ This means:
   candidate for production given llama-server's SSE streaming requirement
   already noted.
 
+## 8. Local firewall risk: Windows Firewall blocking cloudflared <-> local service
+
+Direct question: what's the risk of Windows Firewall blocking the *local*
+loopback communication between `cloudflared` and our own service (llama-server
+via the aipotluck wrapper)? Short answer up front: **that specific risk is low
+and not what shows up in real-world reports.** The documented, recurring
+problems are two different things: (1) antivirus/Defender flagging the
+`cloudflared` binary itself, and (2) *outbound* firewall/network blocking
+between `cloudflared` and Cloudflare's edge (not local loopback at all). Both
+are real and worth designing around; the loopback-specific fear is not well
+supported by what's actually reported.
+
+### Why local loopback traffic itself is low-risk
+
+Windows Firewall's default inbound/outbound rules do not filter traffic to
+`127.0.0.1`/`::1` for ordinary desktop applications — loopback filtering is a
+deliberate opt-in restriction that mostly applies to UWP/AppContainer-sandboxed
+apps (`CheckNetIsolation LoopbackExempt`), not to plain Win32 processes like
+`cloudflared.exe` and `llama-server.exe` running as normal user processes. Two
+ordinary same-machine processes talking over `127.0.0.1:<port>` is exactly the
+traffic pattern Windows Firewall is least likely to interfere with. No GitHub
+issue or community thread found in this research described "cloudflared can't
+reach my local origin because Windows Firewall blocked loopback" as the root
+cause of a real bug report.
+
+### What actually gets reported: two different, real problems
+
+**(A) Antivirus / Windows Defender false-positive detections of the binary
+itself.** This is the single most common `cloudflared`+Windows complaint found,
+and it's recent and recurring:
+
+- `cloudflare/cloudflared#1535` (Sept 2025): Windows Defender flagged
+  `cloudflared 2025.9.1` as `Trojan:Win32/Kepavll!rfn` on both consumer and
+  corporate Defender installs, reproduced "across different computers."
+  Community workaround at the time: temporarily disable real-time protection,
+  install the previous version (2025.8.1) via the `.msi`, then re-enable
+  protection.
+- Cloudflare Community — "Trojan on Tunnel download" (Oct 2025): a separate
+  detection, `Trojan:Win32/Vigorf.A`, on the installer itself. A Cloudflare
+  staff member (`ncano`) confirmed: *"this is a false positive and we are
+  working on signing `cloudflared.exe` binary and its `.msi` installer."*
+- Cloudflare Community — "Cloudflared Tunnel Daemon False Positive in Windows
+  Defender" (earlier thread, same root cause pattern) and a parallel Reddit
+  report about Cloudflare WARP triggering `Trojan.Filecoder.Win32` detections —
+  same category of problem across Cloudflare's client tooling generally, not a
+  one-off.
+
+The pattern across all of these: Cloudflare's Windows binaries get
+intermittently caught by Defender's heuristic/ML detection (not
+signature-based), Cloudflare acknowledges it as a false positive each time, and
+as of the most recent report (Oct 2025) they were actively working on
+**code-signing the binary and installer**, which should reduce — though not
+eliminate — future false positives. **This is a real risk for us**: if we
+silently drop a `cloudflared.exe` onto a user's machine as part of our
+installer, a Defender false-positive quarantine event could delete/block the
+binary with no visible error from *our* code — it just silently fails to start
+or vanishes from disk between runs.
+
+**(B) Outbound connectivity to Cloudflare's edge being blocked/degraded** —
+this is a real firewall interaction, but it's about `cloudflared`'s *outbound*
+connection to Cloudflare (QUIC on UDP, falling back to HTTP/2 on TCP 7844),
+not the local loopback link to our service:
+
+- `cloudflare/cloudflared#1534` (Sept 2025, still open): when a network
+  disruption blocks QUIC (UDP), `cloudflared` correctly falls back to HTTP/2 —
+  but in an environment where **only QUIC is allowed through the firewall**
+  (a real reported corporate configuration) and HTTP/2 is blocked, it never
+  retries QUIC again once it has fallen back, leaving the tunnel stuck retrying
+  a protocol the firewall will never allow. Real log evidence in the issue
+  shows `dial tcp ...:7844: i/o timeout` retried indefinitely after the QUIC
+  path recovers.
+- `cloudflare/cloudflared#1575` ("NEED HELP - Firewall - Docker - Allow
+  cloudflared only connect to Cloudflare and block everything else") —
+  a user explicitly trying to firewall-restrict `cloudflared` to only talk to
+  Cloudflare's IP ranges, confirming this outbound-allowlisting pattern is
+  something real deployments attempt and can get wrong.
+- `cloudflare/cloudflared#1362` ("Publish IP addresses/ranges of edges?",
+  open) — a standing, unresolved ask from users who need to write outbound
+  firewall/allowlist rules for `cloudflared` and don't have a definitive
+  published IP range to allowlist against, precisely because Cloudflare's edge
+  IPs aren't static/documented for this purpose.
+
+### Net risk assessment for aipotluck-local-client
+
+| Risk | Real-world evidence | Applies to us? |
+|---|---|---|
+| Windows Firewall blocking `cloudflared` ↔ our local service (loopback) | None found in the wild | Low — not a documented failure mode |
+| Antivirus/Defender flagging the bundled `cloudflared.exe` as malware | Recurring, recent, multiple confirmed false positives | **Yes — directly applicable, needs handling** |
+| Outbound firewall/corporate-proxy blocking `cloudflared`'s connection to Cloudflare's edge | Real, documented, an open unresolved bug in the fallback logic | Yes, but affects reaching Cloudflare, not our local service pairing |
+| Missing published edge IP ranges for allowlisting | Open standing complaint | Relevant if a user's IT department wants to allowlist us explicitly |
+
+### Recommendations to add to the installer design
+
+1. **Expect and handle AV quarantine, don't just assume the binary stays put.**
+   `CloudflaredSupervisor` (or the installer's fetch step) should verify the
+   binary still exists and still passes a checksum check before each spawn
+   attempt, and surface a clear, specific error message ("Windows security
+   software may have removed the cloudflared binary — see [known issue]") if
+   it's missing post-install, rather than a generic crash/restart loop. This
+   mirrors the checksum-verification approach already used for llama.cpp
+   binaries in `installer/fetch.py`.
+2. **Recommend/document the Microsoft Defender allow-listing step** for users
+   who hit this, pointing at Cloudflare's own confirmed-false-positive threads
+   as evidence, rather than leaving users to independently discover and
+   research the same false-positive reports found here.
+3. **Don't rely on `cloudflared`'s automatic QUIC→HTTP2 fallback recovering on
+   its own** in restrictive network environments — given the open, unresolved
+   #1534 bug. If our own `CloudflaredSupervisor`'s health check detects a
+   tunnel stuck retrying (connection never reaches "healthy" within a
+   reasonable window), a full process restart resets `cloudflared`'s protocol
+   selection state, working around the bug rather than waiting on upstream.
+4. **No special-case loopback firewall handling needed** — treat
+   `cloudflared` ↔ local llama-server exactly like `aipotluck_service.py` ↔
+   `llama-server` today (nothing in the existing installer adds a Windows
+   Firewall rule for that pairing, and there's no evidence one is needed).
+
 ## Sources
 
 1. Cloudflare — Quick Tunnels docs: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/
@@ -253,4 +369,9 @@ This means:
 8. Cloudflare — Create a tunnel (API): https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/
 9. Cloudflare — Create a locally-managed tunnel: https://developers.cloudflare.com/tunnel/advanced/local-management/create-local-tunnel/
 10. Cloudflare API reference — Zero Trust Tunnels: https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/
-
+11. `cloudflare/cloudflared#1535` — Windows Defender false-positive (Kepavll!rfn): https://github.com/cloudflare/cloudflared/issues/1535
+12. Cloudflare Community — "Trojan on Tunnel download" (Vigorf.A false positive, Cloudflare-confirmed): https://community.cloudflare.com/t/trojan-on-tunnel-download/848473
+13. Cloudflare Community — "Cloudflared Tunnel Daemon False Positive in Windows Defender": https://community.cloudflare.com/t/cloudflared-tunnel-daemon-false-positive-in-windows-defender/323388
+14. `cloudflare/cloudflared#1534` — QUIC fallback never retried after firewall recovery (open): https://github.com/cloudflare/cloudflared/issues/1534
+15. `cloudflare/cloudflared#1575` — firewall-restricting cloudflared to Cloudflare-only egress: https://github.com/cloudflare/cloudflared/issues/1575
+16. `cloudflare/cloudflared#1362` — no published edge IP ranges for firewall allowlisting (open): https://github.com/cloudflare/cloudflared/issues/1362
