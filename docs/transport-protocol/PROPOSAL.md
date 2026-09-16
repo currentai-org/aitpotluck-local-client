@@ -220,3 +220,59 @@ changes, to InferenceClient's other task types **if** a future local
 backend implementing those task endpoints is ever added alongside
 llama-server. The transport layer was never the constraint; the set of
 HTTP endpoints the local backend exposes is.
+
+
+## 7. Off-the-shelf transport audit: can we buy instead of build?
+
+Widened the search past "is there a library for HTTP-over-WebSocket" to the actual
+category of tool: reverse-proxy tunneling clients for exposing a local HTTP server
+through NAT, since that's what we're really building. Evaluated against the same
+four axes as §1-4.
+
+### Candidates surveyed
+
+| Project | Language/license | Model | Would it fit? |
+|---|---|---|---|
+| **frp** (`fatedier/frp`) | Go, Apache-2.0, 109k★ | Client dials out to `frps`; supports TCP/UDP/HTTP/HTTPS proxies, TCP stream multiplexing, custom subdomains, URL routing, health checks, TLS, connection pooling | Closest match — does almost exactly what APLC-1 proposes, already battle-tested |
+| **rathole** | Rust, Apache-2.0, 14k★ | Same shape as frp, lighter (≈500KB binary), Noise-protocol encryption built in | Good fit, smaller footprint than frp, less mature ecosystem |
+| **chisel** (`jpillora/chisel`) | Go, MIT | SSH protocol tunneled inside a single WebSocket/HTTP connection; multiplexes many local/remote port-forwards over it | Structurally the closest to APLC-1's own design — SSH-over-WS is one further layer of protocol on top of what we already spec'd |
+| **wstunnel** | Rust, BSD | Wraps arbitrary TCP/UDP inside WebSocket or QUIC, designed to look like ordinary HTTPS traffic to firewalls/DPI | Good raw building block but no HTTP-request-awareness — leaves the request/response framing to us anyway |
+| **Pangolin** (`fosrl/pangolin`) | TS/Next.js, dual AGPL-3/commercial | Full identity-aware access platform (SSO, dashboards, ZTNA) built on WireGuard, not just a tunnel | Overkill — an entire product, not a library; AGPL-3 also complicates embedding in a permissively-licensed OSS client |
+| **sshuttle** | Python, LGPL | Transparent VPN-like proxy over plain SSH, no custom client protocol at all | Elegant but requires SSH server-side, not a good match for a Node/SvelteKit cloud backend |
+| **ngrok / localtunnel / bore / gost / tunnelto** | various | Same reverse-tunnel-as-a-service family, mostly TCP/HTTP port forwarding to a public URL | Already covered in the original NAT-traversal report; same trade-offs apply (ngrok = managed-service lock-in; others = smaller/less maintained) |
+
+Source: `anderspitman/awesome-tunneling` (curated list, cross-checked against
+each project's own README) plus each project's README directly.
+
+### Verdict: don't adopt one wholesale, but borrow the pattern
+
+None of these projects are HTTP-request-aware in the way APLC-1 needs (they proxy
+*ports*, not our specific requirement of one multiplexed request/response stream
+per llama-server call including the concurrent control-plane call — see SPEC.md
+§7). Adopting frp or rathole wholesale would mean:
+
+- **Infra lift goes up, not down.** They require running their own standalone
+  server process (`frps`/rathole server) as a *separate* deployment artifact next
+  to the SvelteKit/Node app — exactly the "additional software component" axis 2
+  was designed to minimize. Our own WebSocket endpoint living inside the existing
+  Node process has zero extra deployables.
+- **They solve a superset of our problem.** Generic TCP/UDP port-forwarding,
+  custom-domain routing, and load balancing are unneeded complexity for "one
+  local client, one cloud endpoint, one HTTP API."
+- **License/maintenance friction.** Pangolin's AGPL-3 core, and the general
+  pattern of "the OSS repo is a shell around a hosted paid service" (ngrok,
+  Pangolin Cloud, several list entries) don't fit an open-source client that
+  should work standalone with no vendor dependency.
+
+Where they *do* earn their place in the design: **chisel is effectively a smaller,
+production-proven version of what APLC-1 already specifies** (multiplex several
+logical connections down one persistent outbound WebSocket/SSH tunnel). That's
+independent validation the core approach — not a novel design — is sound and
+widely deployed at scale. No changes to SPEC.md are needed; if anything, this
+audit reinforces the existing design rather than replacing it.
+
+**Recommendation: keep the custom, minimal APLC-1 transport as specified.** The
+closest off-the-shelf option (frp) would cost us infra simplicity to gain features
+we don't need. Revisit only if the transport needs to grow beyond
+"one HTTP API, one connection" (e.g., multi-service exposure, TCP passthrough for
+non-HTTP payloads) — at that point frp/rathole become worth reconsidering.
