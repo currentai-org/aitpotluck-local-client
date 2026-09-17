@@ -14,6 +14,9 @@ framework imports) so the exact same logic runs under:
 AipotluckServiceRunner owns:
   - the HTTP status server (GET /healthz, GET /status)
   - the LlamaSupervisor lifecycle (start on run, stop on shutdown)
+  - the NewtSupervisor lifecycle, CUR-1266 (same as above, but optional --
+    only present once runtime.json has a "tunnel" section, i.e. the device
+    has been paired to a managed inference endpoint)
 
 It exposes start() / stop() / wait() so callers control the lifecycle
 without needing to know how each OS delivers a "please stop" signal.
@@ -33,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from service.llama_supervisor import LlamaSupervisor  # noqa: E402
+from service.newt_supervisor import NewtSupervisor  # noqa: E402
 
 SERVICE_NAME = "aipotluck"
 DEFAULT_HOST = "127.0.0.1"
@@ -96,6 +100,27 @@ def build_supervisor(runtime_config: dict, log_dir: Path | None) -> LlamaSupervi
     )
 
 
+def build_newt_supervisor(runtime_config: dict, log_dir: Path | None) -> NewtSupervisor | None:
+    """CUR-1266: `None` when this install has no `tunnel` section -- fully backward compatible
+    with an existing runtime.json that predates managed-inference pairing."""
+    tunnel_cfg = runtime_config.get("tunnel")
+    if not tunnel_cfg:
+        return None
+
+    newt_binary = Path(tunnel_cfg["binary"])
+    if not newt_binary.exists():
+        log.error("newt binary not found at %s", newt_binary)
+        return None
+
+    return NewtSupervisor(
+        newt_binary=newt_binary,
+        tunnel_id=tunnel_cfg["id"],
+        tunnel_secret=tunnel_cfg["secret"],
+        tunnel_endpoint=tunnel_cfg["endpoint"],
+        log_dir=log_dir,
+    )
+
+
 class _StatusHandler(BaseHTTPRequestHandler):
     """Bound to a running AipotluckServiceRunner via class attributes set
     at server construction time (http.server handlers are instantiated
@@ -128,12 +153,15 @@ class _StatusHandler(BaseHTTPRequestHandler):
         if self.path == "/status":
             supervisor = self.runner.supervisor
             llama_info = supervisor.info().__dict__ if supervisor else {"error": "supervisor not started"}
+            newt_supervisor = self.runner.newt_supervisor
+            tunnel_info = newt_supervisor.info().__dict__ if newt_supervisor else None
             self._write_json(
                 {
                     "service": SERVICE_NAME,
                     "status": "running",
                     "runtime_config": self.runner.runtime_config,
                     "llama_server": llama_info,
+                    "tunnel": tunnel_info,
                 }
             )
             return
@@ -161,6 +189,7 @@ class AipotluckServiceRunner:
 
         self.runtime_config: dict = {}
         self.supervisor: LlamaSupervisor | None = None
+        self.newt_supervisor: NewtSupervisor | None = None
         self._server: ThreadingHTTPServer | None = None
         self._server_thread: threading.Thread | None = None
         self._stopped = threading.Event()
@@ -174,6 +203,14 @@ class AipotluckServiceRunner:
             self.supervisor.start()
         else:
             log.error("llama-server supervisor could not be created; service will run without it")
+
+        # CUR-1266: optional -- only present once the device has been paired to a managed
+        # endpoint (runtime.json's "tunnel" section, written by `installer.install`'s
+        # --tunnel-id/--tunnel-secret/--tunnel-endpoint flags).
+        self.newt_supervisor = build_newt_supervisor(self.runtime_config, self.log_dir)
+        if self.newt_supervisor:
+            log.info("Starting newt supervisor")
+            self.newt_supervisor.start()
 
         runner = self
 
@@ -206,5 +243,7 @@ class AipotluckServiceRunner:
             self._server = None
         if self.supervisor:
             self.supervisor.stop(timeout=timeout)
+        if self.newt_supervisor:
+            self.newt_supervisor.stop(timeout=timeout)
         log.info("aipotluck service stopped")
         self._stopped.set()
