@@ -496,6 +496,67 @@ TypeScript control plane is worth the added architectural surface; wstunnel
 or sish as fallbacks if the API/control-plane bonus turns out not to matter
 as much in practice as raw maturity and client simplicity.
 
+## Addendum: implementation-scenario deep dives (post-hoc validation)
+
+The scores and writeups above were assigned from documentation review
+alone. A follow-up exercise went further: for a concrete deployment
+scenario (server as a managed VPS service, SvelteKit registering/linking
+devices via an access-token exchange, then routing requests to them and
+polling connection status), **all 4 top-tier tools plus all 12 strong-tier
+tools were cloned and their actual source code/docs traced** against that
+exact workflow. Full individual implementation plans live in
+`implementation-plans/{tool}/PLAN.md`; the two cross-tool comparisons are
+`implementation-plans/COMPARISON-SUMMARY.md` (the 4 finalists) and
+`implementation-plans/STRONG-TIER-SUMMARY.md` (the 12 strong-tier tools).
+
+**This deep dive materially changed the practical shortlist.** The
+abstract scores above treat "server source available + some API/control
+plane" as roughly equivalent across tools that satisfy it, but tracing
+real source revealed a sharp split that the scores alone don't capture:
+
+- **Tools with a genuine, writable, per-device control-plane API** —
+  where SvelteKit can actually register a device, mint it a token, bind a
+  hostname, and poll live status without hand-rolling most of that
+  ourselves — turned out to be a small subset: **Pangolin, chiSSL, gost,
+  zrok, rustunnel, Portal, and boringproxy**. Of these, **gost**'s
+  ingress-object model (bind a hostname directly to a server-issued
+  tunnel-ID via `POST /config/ingresses`) and **Pangolin**'s
+  site/resource/target graph are the cleanest architectural matches to the
+  scenario; **zrok**'s Agent API (`/agent/status`, `/agent/ping`,
+  `/agent/share/http-healthcheck`) is the single best status/health story
+  found across all 16 tools examined this way — genuinely end-to-end,
+  not just "is the tunnel process alive."
+- **Tools that scored well in the docs-only pass but turned out to
+  provide little-to-no dynamic control plane once traced in source**:
+  **wstunnel, sish, frp, piko, specter, tunwg, SirTunnel, and Punchmole**.
+  Several of these are excellent, mature *transport* layers (frp is the
+  single most popular tool in the entire 78-tool survey; wstunnel and sish
+  remain the leanest clients) — but the actual "register a device
+  programmatically" workflow the scenario requires turned out to be 100%
+  custom SvelteKit backend code for all eight, regardless of how mature or
+  popular the underlying tunnel binary is. **SirTunnel and Punchmole are
+  the starkest cases**: SirTunnel is confirmed (by reading all 5 files in
+  its repo) to be a 47-line SSH-triggered Caddy-API wrapper with zero
+  auth/status/revocation of its own; Punchmole's entire authorized-client
+  list is a closed-over array set once at process startup, requiring a
+  full restart to add or revoke a device despite being a genuinely
+  embeddable Node.js library otherwise.
+- **Licensing surfaced as a second axis the abstract scores didn't
+  weight**: both **go-http-tunnel** (already flagged above) and
+  **rustunnel** (newly discovered in the deep dive) are **AGPL-3.0** —
+  real legal exposure for embedding either in a commercial SaaS backend
+  without a commercial license, independent of how good their APIs are.
+
+**Revised shortlist after this validation pass:** Pangolin (best overall
+object model, heaviest deployment), gost (closest single-binary rival to
+Pangolin's routing cleanliness, Swagger-documented API), chiSSL (leanest
+deployment with a real API, but port-only routing needs an extra reverse
+proxy layer), and zrok (best end-to-end status/health story, heaviest
+underlying architecture via OpenZiti) — with rustunnel and Portal as viable
+alternates carrying real license/auth-model complications. See
+`implementation-plans/STRONG-TIER-SUMMARY.md` for the full per-tool
+breakdown behind this revision.
+
 ## Sources
 
 [1] https://github.com/erebe/wstunnel

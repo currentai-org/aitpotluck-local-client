@@ -1045,6 +1045,64 @@ option; Pangolin if the larger, more actively-developed platform with a
 TypeScript control plane is worth the added architectural surface; wstunnel
 or sish as fallbacks if the API/control-plane bonus turns out not to matter
 as much in practice as raw maturity and client simplicity.</p>
+<h2>Addendum: implementation-scenario deep dives (post-hoc validation)</h2>
+<p>The scores and writeups above were assigned from documentation review
+alone. A follow-up exercise went further: for a concrete deployment
+scenario (server as a managed VPS service, SvelteKit registering/linking
+devices via an access-token exchange, then routing requests to them and
+polling connection status), <strong>all 4 top-tier tools plus all 12 strong-tier
+tools were cloned and their actual source code/docs traced</strong> against that
+exact workflow. Full individual implementation plans live in
+<code>implementation-plans/{tool}/PLAN.md</code>; the two cross-tool comparisons are
+<code>implementation-plans/COMPARISON-SUMMARY.md</code> (the 4 finalists) and
+<code>implementation-plans/STRONG-TIER-SUMMARY.md</code> (the 12 strong-tier tools).</p>
+<p><strong>This deep dive materially changed the practical shortlist.</strong> The
+abstract scores above treat "server source available + some API/control
+plane" as roughly equivalent across tools that satisfy it, but tracing
+real source revealed a sharp split that the scores alone don't capture:</p>
+<ul>
+<li><strong>Tools with a genuine, writable, per-device control-plane API</strong> —
+  where SvelteKit can actually register a device, mint it a token, bind a
+  hostname, and poll live status without hand-rolling most of that
+  ourselves — turned out to be a small subset: <strong>Pangolin, chiSSL, gost,
+  zrok, rustunnel, Portal, and boringproxy</strong>. Of these, <strong>gost</strong>'s
+  ingress-object model (bind a hostname directly to a server-issued
+  tunnel-ID via <code>POST /config/ingresses</code>) and <strong>Pangolin</strong>'s
+  site/resource/target graph are the cleanest architectural matches to the
+  scenario; <strong>zrok</strong>'s Agent API (<code>/agent/status</code>, <code>/agent/ping</code>,
+  <code>/agent/share/http-healthcheck</code>) is the single best status/health story
+  found across all 16 tools examined this way — genuinely end-to-end,
+  not just "is the tunnel process alive."</li>
+<li><strong>Tools that scored well in the docs-only pass but turned out to
+  provide little-to-no dynamic control plane once traced in source</strong>:
+  <strong>wstunnel, sish, frp, piko, specter, tunwg, SirTunnel, and Punchmole</strong>.
+  Several of these are excellent, mature <em>transport</em> layers (frp is the
+  single most popular tool in the entire 78-tool survey; wstunnel and sish
+  remain the leanest clients) — but the actual "register a device
+  programmatically" workflow the scenario requires turned out to be 100%
+  custom SvelteKit backend code for all eight, regardless of how mature or
+  popular the underlying tunnel binary is. <strong>SirTunnel and Punchmole are
+  the starkest cases</strong>: SirTunnel is confirmed (by reading all 5 files in
+  its repo) to be a 47-line SSH-triggered Caddy-API wrapper with zero
+  auth/status/revocation of its own; Punchmole's entire authorized-client
+  list is a closed-over array set once at process startup, requiring a
+  full restart to add or revoke a device despite being a genuinely
+  embeddable Node.js library otherwise.</li>
+<li><strong>Licensing surfaced as a second axis the abstract scores didn't
+  weight</strong>: both <strong>go-http-tunnel</strong> (already flagged above) and
+  <strong>rustunnel</strong> (newly discovered in the deep dive) are <strong>AGPL-3.0</strong> —
+  real legal exposure for embedding either in a commercial SaaS backend
+  without a commercial license, independent of how good their APIs are.</li>
+</ul>
+<p><strong>Revised shortlist after this validation pass:</strong> Pangolin (best overall
+object model, heaviest deployment), gost (closest single-binary rival to
+Pangolin's routing cleanliness, Swagger-documented API), chiSSL (leanest
+deployment with a real API, but port-only routing needs an extra reverse
+proxy layer), and zrok (best end-to-end status/health story, heaviest
+underlying architecture via OpenZiti) — with rustunnel and Portal as viable
+alternates carrying real license/auth-model complications. See
+<code>implementation-plans/STRONG-TIER-SUMMARY.md</code> for the full per-tool
+breakdown behind this revision.</p>
 <h2>Sources</h2>
 <p><sup class="cite">[1]</sup> <a href="https://github.com/erebe/wstunnel">https://github.com/erebe/wstunnel</a>
 <sup class="cite">[2]</sup> <a href="https://github.com/azimjohn/jprq">https://github.com/azimjohn/jprq</a>
