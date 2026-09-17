@@ -84,6 +84,18 @@ URLs are listed in Sources. Field notes below are drawn directly from that
 research; some entries (deliberately) received lighter research depth per
 the task's own instruction to avoid over-investigating clear
 disqualifications.</p>
+<p><strong>Implementation-validation pass.</strong> After initial docs-only scoring, the top
+16 tools (4 originally-scored 5/5 + 12 originally-scored 4/5) were put
+through a second, deeper validation round: each was cloned, its actual
+source code and docs traced against a concrete deployment scenario
+(server as a managed VPS service; SvelteKit registers/links a device via
+an access-token exchange; SvelteKit configures routing to that device;
+SvelteKit polls connection status). Scores below reflect this validation
+where it was performed — entries marked "confirmed" kept their original
+score after tracing real source, entries marked "upgraded"/"downgraded"
+had their score revised based on what the implementation deep dive
+actually found. Full per-tool implementation plans are in
+<code>implementation-plans/{tool}/PLAN.md</code>.</p>
 <h2>Full comparison table (all 78 tools, sorted by score)</h2>
 <table>
 <thead>
@@ -95,27 +107,10 @@ disqualifications.</p>
 <th>Maturity</th>
 <th>Client (TUN/admin-free?)</th>
 <th>Server API/control-plane</th>
+<th>Implementation notes</th>
 </tr>
 </thead>
 <tbody>
-<tr>
-<td>5/5</td>
-<td>wstunnel</td>
-<td>Rust (v7+ rewrite; earlier versions in …</td>
-<td>~7.0k GitHub stars, 567 forks, 56 watchers - by far the most popular …</td>
-<td>Actively maintained by a single core maintainer (erebe) with communit…</td>
-<td>Client is a single static binary (no interpreter/runtime needed), unprivileged …</td>
-<td>see server_requirements notes</td>
-</tr>
-<tr>
-<td>5/5</td>
-<td>sish</td>
-<td>Go</td>
-<td>4.7k GitHub stars, 335 forks, 54 watchers — clearly the most popular …</td>
-<td>Actively maintained, well-documented, production-oriented (used to ru…</td>
-<td>Excellent — client-side needs literally nothing beyond a standard OpenSSH clien…</td>
-<td>see server_requirements notes</td>
-</tr>
 <tr>
 <td>5/5</td>
 <td>Pangolin</td>
@@ -124,6 +119,7 @@ disqualifications.</p>
 <td>Very actively maintained: huge, continuously growing commit history (…</td>
 <td>The client connector, 'newt,' is a single static Go binary (get-newt.sh install…</td>
 <td>Likely true — TypeScript; Pangolin's control plane is a TypeScript/Next.js app …</td>
+<td>Confirmed 5/5 — real site/resource/target API, <code>online</code> status field</td>
 </tr>
 <tr>
 <td>5/5</td>
@@ -133,6 +129,47 @@ disqualifications.</p>
 <td>37 commits but clearly a mature, feature-rich fork/successor of chise…</td>
 <td>Single static Go binary client (Homebrew install or prebuilt release binary), n…</td>
 <td>true -- Go server exposes a documented REST API (OpenAPI/Redoc spec published) …</td>
+<td>Confirmed 5/5 — real REST API, but port-only routing (no hostname dispatch)</td>
+</tr>
+<tr>
+<td>5/5</td>
+<td>gost</td>
+<td>Go</td>
+<td>7.5k stars, 828 forks, 52 watchers; large multi-protocol proxy/tunnel…</td>
+<td>Actively maintained (558 commits, continuous releases, install script…</td>
+<td>Single Go binary, installable via releases page, install script, or Docker; use…</td>
+<td>true — Go server with a documented RESTful HTTP API (Basic Auth, Swagger/OpenAP…</td>
+<td><strong>Upgraded 4→5</strong> — confirmed Ingress API binds hostname→tunnel-ID directly</td>
+</tr>
+<tr>
+<td>5/5</td>
+<td>zrok</td>
+<td>Go</td>
+<td>4.7k stars, 222 forks, 30 watchers; backed by the OpenZiti project/Ne…</td>
+<td>Very actively maintained (huge commit volume, frequent releases, dedi…</td>
+<td>Single binary (zrok CLI) across Windows/macOS/Linux/Raspberry Pi; built on Open…</td>
+<td>true — Go SDK for embedding sharing/tunnel logic, plus a generated REST client/…</td>
+<td><strong>Upgraded 4→5</strong> — confirmed Agent API gives best end-to-end health story surveyed</td>
+</tr>
+<tr>
+<td>4/5</td>
+<td>wstunnel</td>
+<td>Rust (v7+ rewrite; earlier versions in …</td>
+<td>~7.0k GitHub stars, 567 forks, 56 watchers - by far the most popular …</td>
+<td>Actively maintained by a single core maintainer (erebe) with communit…</td>
+<td>Client is a single static binary (no interpreter/runtime needed), unprivileged …</td>
+<td>see server_requirements notes</td>
+<td><strong>Downgraded 5→4</strong> — confirmed zero network API; all control-plane logic is custom</td>
+</tr>
+<tr>
+<td>4/5</td>
+<td>sish</td>
+<td>Go</td>
+<td>4.7k GitHub stars, 335 forks, 54 watchers — clearly the most popular …</td>
+<td>Actively maintained, well-documented, production-oriented (used to ru…</td>
+<td>Excellent — client-side needs literally nothing beyond a standard OpenSSH clien…</td>
+<td>see server_requirements notes</td>
+<td><strong>Downgraded 5→4</strong> — admin API is read/kill-only; auth callback exists but no add/revoke API</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -142,24 +179,7 @@ disqualifications.</p>
 <td>Actively maintained: dev branch under continuous development, recent …</td>
 <td>Single static Go binary (frpc) — no TUN/TAP, no admin/root required for standar…</td>
 <td>Partially true — Go; frps/frpc expose an HTTP Admin API (dashboard, reload, pro…</td>
-</tr>
-<tr>
-<td>4/5</td>
-<td>gost</td>
-<td>Go</td>
-<td>7.5k stars, 828 forks, 52 watchers; large multi-protocol proxy/tunnel…</td>
-<td>Actively maintained (558 commits, continuous releases, install script…</td>
-<td>Single Go binary, installable via releases page, install script, or Docker; use…</td>
-<td>true — Go server with a documented RESTful HTTP API (Basic Auth, Swagger/OpenAP…</td>
-</tr>
-<tr>
-<td>4/5</td>
-<td>zrok</td>
-<td>Go</td>
-<td>4.7k stars, 222 forks, 30 watchers; backed by the OpenZiti project/Ne…</td>
-<td>Very actively maintained (huge commit volume, frequent releases, dedi…</td>
-<td>Single binary (zrok CLI) across Windows/macOS/Linux/Raspberry Pi; built on Open…</td>
-<td>true — Go SDK for embedding sharing/tunnel logic, plus a generated REST client/…</td>
+<td>Confirmed 4/5 — admin API is read-only status; registration needs a custom Login-plugin callback</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -169,15 +189,7 @@ disqualifications.</p>
 <td>426 commits, includes Helm charts, benchmark suite, cluster tests, an…</td>
 <td>Piko agent (<code>piko agent http/tcp</code>) or Piko forward (<code>piko forward</code>) run as simp…</td>
 <td>Partial/true -- there is a Go SDK (<code>piko</code> Go module) for opening listeners prog…</td>
-</tr>
-<tr>
-<td>4/5</td>
-<td>SirTunnel</td>
-<td>Python (~50-line script) + Caddy (Go) o…</td>
-<td>1.6k stars, 125 forks, 14 watchers -- popular for its extreme minimal…</td>
-<td>Only 23 commits -- intentionally frozen/minimal ('I'm unlikely to add…</td>
-<td>No special client at all -- uses a standard SSH client's remote port forwarding…</td>
-<td>True, indirectly -- Caddy's JSON admin API (typically on :2019) is a genuine HT…</td>
+<td>Confirmed 4/5 — pure JWT minting by us, no registration endpoint; no clean revoke primitive</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -187,6 +199,7 @@ disqualifications.</p>
 <td>377 commits, has a CHANGELOG.md and systemd unit files -- shows ongoi…</td>
 <td>Single Go binary CLI (<code>boringproxy client -server ... -token ...</code>), no TAP/TUN …</td>
 <td>True, Go -- api.go implements a REST-style HTTP API used internally by boringpr…</td>
+<td>Confirmed 4/5 — real REST API (<code>/api/tunnels</code>,<code>/tokens</code>), server self-issues SSH keys</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -196,15 +209,7 @@ disqualifications.</p>
 <td>Actively developed: CI badge, recent AGENTS.md/CLAUDE.md/MCP integrat…</td>
 <td>Client is a single Rust binary (<code>rustunnel</code>) with a setup wizard (`rustunnel se…</td>
 <td>true — language=Rust backend exposing REST/OpenAPI (HTTP+JSON) for listing/clos…</td>
-</tr>
-<tr>
-<td>4/5</td>
-<td>tunwg</td>
-<td>Go</td>
-<td>287 stars, 21 forks, 8 watchers. Public tunwg.com hosted instance; po…</td>
-<td>Active — 18 commits, CI workflows, devcontainer, Docker images publis…</td>
-<td>CONFIRMED: does NOT need a TUN/TAP device or admin/root. Despite being 'WireGua…</td>
-<td>partial/true for Go only — <code>tunwg.NewListener()</code> is a real programmatic Go API …</td>
+<td>Confirmed 4/5 — real REST/OpenAPI control-plane, but AGPL-3.0 licensing</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -214,6 +219,7 @@ disqualifications.</p>
 <td>Very actively developed: 1,653 commits on main, CI badge passing, ded…</td>
 <td>Single Go binary (portal-tunnel CLI / SDK), no TAP/TUN, no admin/root privilege…</td>
 <td>true -- Go relay server exposes an HTTP/JSON control-plane API (<code>/sdk/register</code>…</td>
+<td>Confirmed 4/5 — real <code>/sdk/*</code> API, but SIWE crypto-signing auth adds complexity</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -223,6 +229,7 @@ disqualifications.</p>
 <td>Actively maintained (86 commits, dev branch, CI via GitHub Actions, t…</td>
 <td>No TAP/TUN interface — it's a userspace WebSocket(s)/HTTP(s)/TCP relay proxy, n…</td>
 <td>false — the server exposes a browser-based web admin config UI (not a documente…</td>
+<td>Confirmed 4/5 — real authAPI callback mirrors sish's model for device approval</td>
 </tr>
 <tr>
 <td>4/5</td>
@@ -232,15 +239,27 @@ disqualifications.</p>
 <td>Very active: 729 commits, recent AGENTS.md/DESIGN.md/OPERATOR.md/PROD…</td>
 <td>No TAP/TUN — client is a userspace Go binary using QUIC/TLS transport to tunnel…</td>
 <td>partial/true — Go-based local management API on the client (<code>--server</code> flag) fo…</td>
+<td>Confirmed 4/5 — real Twirp mint/revoke API, but only on a separate owner-client sidecar</td>
 </tr>
 <tr>
-<td>4/5</td>
-<td>Punchmole</td>
-<td>JavaScript (Node.js)</td>
-<td>19 stars, 4 forks, 1 watcher. Author states it has been used 'extensi…</td>
-<td>46 commits total, single-maintainer project (degola). README describe…</td>
-<td>No TAP/TUN interfaces, no admin/root privileges. Pure Node.js WebSocket client …</td>
-<td>true — JavaScript/Node.js. Both PunchmoleServer() and PunchmoleClient() are pla…</td>
+<td>3/5</td>
+<td>SirTunnel</td>
+<td>Python (~50-line script) + Caddy (Go) o…</td>
+<td>1.6k stars, 125 forks, 14 watchers -- popular for its extreme minimal…</td>
+<td>Only 23 commits -- intentionally frozen/minimal ('I'm unlikely to add…</td>
+<td>No special client at all -- uses a standard SSH client's remote port forwarding…</td>
+<td>True, indirectly -- Caddy's JSON admin API (typically on :2019) is a genuine HT…</td>
+<td><strong>Downgraded 4→3</strong> — confirmed zero API/auth/status of its own; 100% custom glue</td>
+</tr>
+<tr>
+<td>3/5</td>
+<td>tunwg</td>
+<td>Go</td>
+<td>287 stars, 21 forks, 8 watchers. Public tunwg.com hosted instance; po…</td>
+<td>Active — 18 commits, CI workflows, devcontainer, Docker images publis…</td>
+<td>CONFIRMED: does NOT need a TUN/TAP device or admin/root. Despite being 'WireGua…</td>
+<td>partial/true for Go only — <code>tunwg.NewListener()</code> is a real programmatic Go API …</td>
+<td><strong>Downgraded 4→3</strong> — only 2 endpoints, one shared secret, no revocation at all</td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -250,6 +269,7 @@ disqualifications.</p>
 <td>Newer and smaller community than localtunnel/tunnelmole (527 stars, s…</td>
 <td>Fully unprivileged: <code>npm install pipenet</code> then <code>npx pipenet client --port 3000</code>…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -259,6 +279,7 @@ disqualifications.</p>
 <td>Small project (58 stars, 7 forks, 1 watcher) with a single primary ma…</td>
 <td>Client is <code>cactus-tunnel client &lt;server&gt; &lt;target&gt;</code>, distributed via npm, so the…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -268,6 +289,7 @@ disqualifications.</p>
 <td>Actively developed right now (commits within days of this check), wit…</td>
 <td>Client is distributed as a NativeAOT-compiled CLI binary (or via NuGet as `Tunn…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -277,6 +299,7 @@ disqualifications.</p>
 <td>Small but genuinely active project with a real author blog post expla…</td>
 <td>Also just an npm library — <code>import { TunnelClient } from "h2tunnel"</code> requires N…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -286,6 +309,7 @@ disqualifications.</p>
 <td>Actively maintained: recent changelog entries describe substantive v1…</td>
 <td>Single static Go binary combining both client and server (<code>chisel client</code>, `chi…</td>
 <td>false as a control-plane — Go source is embeddable as a library (chisel is impo…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -295,6 +319,7 @@ disqualifications.</p>
 <td>Actively maintained (234 commits, ongoing releases with semver tags a…</td>
 <td>Single static Rust binary (~500KiB minimal build) for both client and server, n…</td>
 <td>false — an HTTP API for configuration is only planned/WIP per the README, not a…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -304,6 +329,7 @@ disqualifications.</p>
 <td>Actively maintained relative to its scope (68 commits — intentionally…</td>
 <td>Single static Rust binary (<code>bore local &lt;port&gt; --to &lt;server&gt;</code>), installable via …</td>
 <td>false — no HTTP/REST API; only a lightweight custom TCP control protocol betwee…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -313,6 +339,7 @@ disqualifications.</p>
 <td>612 commits on main, active development including recent additions (A…</td>
 <td>Single Go binary CLI (portr http/tcp), installed via install.sh or package mana…</td>
 <td>Unclear/likely false as a documented external API -- true only in the sense of …</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -322,6 +349,7 @@ disqualifications.</p>
 <td>Only 82 commits -- smaller/newer project; has GitHub Actions CI and d…</td>
 <td>VERIFIED CLAIM DOES NOT APPLY THE WAY EXPECTED: Wiretap's README explicitly sta…</td>
 <td>False -- no documented REST/TS/JS API; all control is via CLI subcommands and g…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -331,6 +359,7 @@ disqualifications.</p>
 <td>Actively maintained fork with continuous commits and automated Releas…</td>
 <td>Client (npc) is a single static Go binary installed via a shell/PowerShell inst…</td>
 <td>false (or unconfirmed) — the Web UI likely calls internal HTTP endpoints, but n…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -340,6 +369,7 @@ disqualifications.</p>
 <td>Actively maintained by Flipt-io; has CI (Dagger-based unit/integratio…</td>
 <td>Client is a Go library (go.flipt.io/reverst/client) built on net/http std-lib a…</td>
 <td>Partial — Go client library (true, language=Go, used to register tunnel groups …</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -349,6 +379,7 @@ disqualifications.</p>
 <td>Active-looking multi-module project with GitHub Actions CI, Docker im…</td>
 <td>CLI client (<code>portbuddy</code>) is described as a GraalVM-native command-line applicat…</td>
 <td>Likely true (unconfirmed in README) — language=Java/Spring Boot 'server' module…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -358,6 +389,7 @@ disqualifications.</p>
 <td>Active repo (43 commits, main branch), has CI workflows, Docker/compo…</td>
 <td>No TAP/TUN. No admin/root needed — client is a single ~4MB Rust binary using QU…</td>
 <td>false — no REST/control-plane API documented; relay is started via CLI flags/en…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -367,6 +399,7 @@ disqualifications.</p>
 <td>Active, mature — 141 commits, Go Report Card + uptime badges in READM…</td>
 <td>No TAP/TUN, no admin/root, and literally no software install at all — the 'clie…</td>
 <td>false — no HTTP API; control is via SSH protocol/interactive shell only, though…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -376,6 +409,7 @@ disqualifications.</p>
 <td>75 commits, GitHub Actions CI passing, CHANGELOG.md maintained, relea…</td>
 <td>Single Go binary agent (<code>rtun</code>), no TAP/TUN, no admin/root needed for normal po…</td>
 <td>false -- no REST/HTTP control-plane; agent registration and port whitelisting a…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -385,6 +419,7 @@ disqualifications.</p>
 <td>83 commits, MIT license copyright through 2023, prebuilt release bina…</td>
 <td>Prebuilt single Go binary or build-from-source, no TAP/TUN, no admin/root requi…</td>
 <td>false -- config/env-var driven server with no REST/HTTP control-plane; tunnel c…</td>
+<td></td>
 </tr>
 <tr>
 <td>3/5</td>
@@ -394,6 +429,17 @@ disqualifications.</p>
 <td>98 commits, active CI (GitHub Actions badge passing), has husky/eslin…</td>
 <td>No TAP/TUN interfaces, no admin/root privileges. Install via <code>npm i -g hsync</code> o…</td>
 <td>Partially true — JavaScript. The client is programmable/embeddable (browser glo…</td>
+<td></td>
+</tr>
+<tr>
+<td>2/5</td>
+<td>Punchmole</td>
+<td>JavaScript (Node.js)</td>
+<td>19 stars, 4 forks, 1 watcher. Author states it has been used 'extensi…</td>
+<td>46 commits total, single-maintainer project (degola). README describe…</td>
+<td>No TAP/TUN interfaces, no admin/root privileges. Pure Node.js WebSocket client …</td>
+<td>true — JavaScript/Node.js. Both PunchmoleServer() and PunchmoleClient() are pla…</td>
+<td><strong>Downgraded 4→2</strong> — API_KEYS is startup-only; no dynamic add/revoke without a restart</td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -403,6 +449,7 @@ disqualifications.</p>
 <td>Very popular historically but effectively in maintenance-only mode: r…</td>
 <td>Client is simple and unprivileged: <code>npm install -g localtunnel</code> or `npx localtu…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -412,6 +459,7 @@ disqualifications.</p>
 <td>Actively maintained relative to the older localtunnel forks - has CI,…</td>
 <td>Client install is simple and unprivileged for the JS path: `npm install --save …</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -421,6 +469,7 @@ disqualifications.</p>
 <td>Popular and historically well-regarded, but maintenance has clearly s…</td>
 <td>Requires running the project's own compiled Go <code>tunnel</code> client binary on the en…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -430,6 +479,7 @@ disqualifications.</p>
 <td>Widely known (the original 'ngrok alternative'), but effectively unma…</td>
 <td>There IS an existing Node.js client library (npm 'localtunnel'), but no officia…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -439,6 +489,7 @@ disqualifications.</p>
 <td>Open-source 'ngrok alternative', actively marketed, has a hosted serv…</td>
 <td>Existing npm/Node client only; no Python client. The end-user's local machine w…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -448,6 +499,7 @@ disqualifications.</p>
 <td>Mature, long-lived abstraction layer over multiple realtime transport…</td>
 <td>No Python client exists; Primus's client is JS-only (browser or Node). Its docu…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -457,6 +509,7 @@ disqualifications.</p>
 <td>Surprisingly still receiving commits: latest commit 2025-10-26 (versi…</td>
 <td>Single CLI/binary install via <code>curl https://get.telebit.io/ \| bash</code> (installs a…</td>
 <td>false (or unclear) — JavaScript/Node.js codebase; no documented external HTTP A…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -466,6 +519,7 @@ disqualifications.</p>
 <td>Moderate activity (119 commits); README shows Cargo.toml pinned near …</td>
 <td>Single Rust binary installable via Homebrew, Cargo, or prebuilt release downloa…</td>
 <td>false — no documented external REST API; tunnel registration happens via the cl…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -475,6 +529,7 @@ disqualifications.</p>
 <td>Repo has moved/renamed to exposedev/expose (beyondcode/expose redirec…</td>
 <td>PHP-based CLI (installed via Composer / PHAR, or the 'expose' bash wrapper scri…</td>
 <td>false (not confirmed) — no documented standalone HTTP API separate from the ful…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -484,6 +539,7 @@ disqualifications.</p>
 <td>Actively developed (276 commits, recent tooling like .claude/.agents …</td>
 <td>Single Go binary (<code>pgrok</code>), installable via Homebrew or prebuilt release archiv…</td>
 <td>false — no documented REST API for programmatic tunnel registration; provisioni…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -493,6 +549,7 @@ disqualifications.</p>
 <td>755 commits, shields.io badges show 'Maintenance: yes' and active bui…</td>
 <td>gs-netcat and related CLI tools are plain binaries (install.sh or package manag…</td>
 <td>False -- it's a low-level secure TCP rendezvous tool (like netcat), not a tunne…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -502,6 +559,7 @@ disqualifications.</p>
 <td>540 commits, has CI (GitHub Actions), renovate bot for dependency upd…</td>
 <td>CONFIRMED WireGuard-based: Client Nodes and Gateway Nodes initiate encrypted Wi…</td>
 <td>Likely true, TypeScript -- the repo is tagged 'api-server' and 'management-syst…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -511,6 +569,7 @@ disqualifications.</p>
 <td>README explicitly states 'This program is under active development an…</td>
 <td>PageKite's <code>pagekite.py</code> is a pure Python script/CLI — no TAP/TUN interface nee…</td>
 <td>false — no documented REST API or JS/TS SDK for programmatic tunnel registratio…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -520,6 +579,7 @@ disqualifications.</p>
 <td>Small commit count (23) suggests a young/lean project rather than a l…</td>
 <td>No custom client binary at all — the 'client' is just the standard OpenSSH clie…</td>
 <td>false — no REST/JS API; server is env-var/config-driven, and tunnel creation is…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -529,6 +589,7 @@ disqualifications.</p>
 <td>Active — 129 commits, GoReleaser CI, Homebrew tap, Docker images publ…</td>
 <td>No TAP/TUN, no admin/root needed at runtime (install script uses sudo only to p…</td>
 <td>false — CLI/env-var driven only.</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -538,6 +599,7 @@ disqualifications.</p>
 <td>Active — 32 commits, includes demo video, deployed globally on Fly.io…</td>
 <td>No TAP/TUN, no admin/root, and no install at all — client is just the OS ssh bi…</td>
 <td>false for external registration — there IS an internal Node.js service, but it'…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -547,6 +609,7 @@ disqualifications.</p>
 <td>Archived by owner Dec 17, 2022 (read-only). README itself notes 'ejem…</td>
 <td>No TAP/TUN, no admin/root. Single binary installable via Homebrew (`brew instal…</td>
 <td>false — CLI/flag-configured only; local web inspector UI is for traffic inspect…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -556,6 +619,7 @@ disqualifications.</p>
 <td>Actively developed (218 commits on main, CI tests passing badge). Rec…</td>
 <td>Single static Go binary (curl | sh installer or <code>go build</code>), no admin/root priv…</td>
 <td>false -- no rendezvous/signaling server source or API surface is published in t…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -565,6 +629,7 @@ disqualifications.</p>
 <td>Lerna/yarn-workspaces monorepo, Travis CI (an old CI system), 71 comm…</td>
 <td>CLI usable via <code>npx hypertunnel --port 8080</code> or global npm install. No TAP/TUN,…</td>
 <td>Partial/true -- JavaScript (Node.js) server package exists and can theoreticall…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -574,6 +639,7 @@ disqualifications.</p>
 <td>84 commits, actively described as a running production service with s…</td>
 <td>No client software to install at all -- uses the user's existing OpenSSH client…</td>
 <td>false -- no HTTP control-plane; interaction model is purely 'establish an SSH -…</td>
+<td></td>
 </tr>
 <tr>
 <td>2/5</td>
@@ -583,6 +649,7 @@ disqualifications.</p>
 <td>83 commits, last significant activity appears old (CircleCI-era, Pipf…</td>
 <td>This repo is server-side only (Holepunch API/backend); the client is SSH-based …</td>
 <td>true — Flask REST API backend (Python) that provisions SSH-based reverse tunnel…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -592,6 +659,7 @@ disqualifications.</p>
 <td>Explicitly and openly declared unmaintained/legacy by its own author …</td>
 <td>Would require installing/building a Go binary (`go install github.com/progrium/…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -601,6 +669,7 @@ disqualifications.</p>
 <td>Red flags: the maintained hosted service (jprq.io) went members-only/…</td>
 <td>Client is a single compiled Go binary installed via package managers (brew/scoo…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -610,6 +679,7 @@ disqualifications.</p>
 <td>Effectively abandoned/unmaintained. README itself states 'under activ…</td>
 <td>Client is also a Go binary/library (tunnel.NewClient) requiring a compiled Go c…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -619,6 +689,7 @@ disqualifications.</p>
 <td>Extremely mature and battle-tested generic HTTP/WS proxy library, emb…</td>
 <td>None — it's server-only and assumes the target is directly reachable, which is …</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -628,6 +699,7 @@ disqualifications.</p>
 <td>Essentially abandoned toy/proof-of-concept implementation of a stream…</td>
 <td>N/A — package is effectively dead. Note also that this npm package has no relat…</td>
 <td>see server_requirements notes</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -637,6 +709,7 @@ disqualifications.</p>
 <td>Repo exists with a CI pipeline (recent commit 'Remove javascript from…</td>
 <td>FAILS the client constraint outright: per the awesome-tunneling list, tunnel.py…</td>
 <td>false — it's a WireGuard config generator/service, not an HTTP API for tunnel r…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -645,6 +718,7 @@ disqualifications.</p>
 <td>No GitHub stars/forks (Bitbucket-hosted, single small repo). Known wi…</td>
 <td>Appears to be a long-running personal hosted service by ValdikSS (als…</td>
 <td>Explicitly 'No software, no registration' — just an ordinary SSH client (<code>ssh -… | false — no API of any kind; it's raw</code>ssh -R<code>/</code>-J` semantics with no control-pl…</td>
+<td></td>
 <td></td>
 </tr>
 <tr>
@@ -655,6 +729,7 @@ disqualifications.</p>
 <td>Effectively abandoned/stalled: last substantive activity was years ag…</td>
 <td>Designed to be a lightweight port-forwarding client with automatic HTTPS ('leas…</td>
 <td>Possibly true historically (Go) — code includes a 'public_api.go' and multiple …</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -664,6 +739,7 @@ disqualifications.</p>
 <td>Explicitly dead as an open-source project: GitHub shows 'This reposit…</td>
 <td>N/A for our purposes — codebase is unmaintained/archived and the original hoste…</td>
 <td>false for this v1 codebase — no documented control-plane API; the JS/Python/Go/…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -673,6 +749,7 @@ disqualifications.</p>
 <td>Actively maintained (1,363 commits, ongoing releases, uses modern too…</td>
 <td>FAILS constraint. Despite README claims of 'doesn't require admin', sshuttle wo…</td>
 <td>false — no HTTP API; it's purely a CLI wrapping SSH + local firewall manipulati…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -682,6 +759,7 @@ disqualifications.</p>
 <td>Only 65 commits -- much smaller/newer project than the others; explic…</td>
 <td>CONFIRMED WireGuard-based and requires a TUN interface: the client-side docker-…</td>
 <td>False -- explicitly 'no code or APIs, just an ultra generic NGINX config and so…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -691,6 +769,7 @@ disqualifications.</p>
 <td>Automated releases on every commit to main (Docker image publishing),…</td>
 <td>DISQUALIFYING: onionpipe requires and bundles a Tor daemon (<code>tor</code> binary in $PA…</td>
 <td>false — CLI-only tool; no REST/JS API; a YAML config mode and a possible future…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -700,6 +779,7 @@ disqualifications.</p>
 <td>DISQUALIFYING RED FLAG: repository was archived by the owner on Sep 1…</td>
 <td>Client is a Go binary (<code>tunneller client -expose localhost:8080</code>) — no TAP/TUN …</td>
 <td>false — no REST/JS API; operates via CLI and an MQTT message bus.</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -709,6 +789,7 @@ disqualifications.</p>
 <td>Archived by owner May 21, 2025 (read-only), migrated to Codeberg. Onl…</td>
 <td>No TAP/TUN. No admin/root required. Single Go binary (crowbar-forward); honors …</td>
 <td>false — no API; CLI/config-file only, and per-tunnel model doesn't match a host…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -718,6 +799,7 @@ disqualifications.</p>
 <td>Abandoned: last commit Jul 6, 2019, only 10 commits total, no release…</td>
 <td>Requires Docker installed on the client/dev machine plus mounting an SSH privat…</td>
 <td>false.</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -727,6 +809,7 @@ disqualifications.</p>
 <td>Only 31 commits; README frames it as designed for 'quick local develo…</td>
 <td>Simple npm-installable CLI/TypeScript library (<code>npm i -g @styfle/vgrok</code>), no TA…</td>
 <td>true (client-side only) -- TypeScript programmatic API exists (`import { client…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -736,6 +819,7 @@ disqualifications.</p>
 <td>90 commits, active CI (build-and-push + check-for-updates workflows),…</td>
 <td>DISQUALIFYING: requires an actual WireGuard kernel/userspace tunnel interface (…</td>
 <td>false — purely docker-compose env/config file driven, no REST/JS API.</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -745,6 +829,7 @@ disqualifications.</p>
 <td>126 commits, actively developed, has GitHub Sponsors, releases for Li…</td>
 <td>DISQUALIFYING: explicitly requires an installed WireGuard client and joins a re…</td>
 <td>false — CLI/docker-label driven, no documented REST/JS control-plane API.</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -754,6 +839,7 @@ disqualifications.</p>
 <td>54 commits, has CHANGELOG.md, GitHub Actions CI, cargo/crates.io + Ho…</td>
 <td>No TAP/TUN. However it is fundamentally a management CLI/TUI wrapper around Clo…</td>
 <td>false — CLI/TOML config driven locally; it does call the Cloudflare API but tha…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -763,6 +849,7 @@ disqualifications.</p>
 <td>91 commits, CI via GitHub Actions, tagged releases and Jitpack distri…</td>
 <td>Uses Tor as its transport — exposes local services as Tor hidden (.onion) servi…</td>
 <td>false — CLI only, Java/Spring Boot internals, no exposed control-plane API.</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -772,6 +859,7 @@ disqualifications.</p>
 <td>DISQUALIFYING red flag: repository is archived (read-only) as of Jul …</td>
 <td>No TAP/TUN — client-side is just a standard SSH client doing remote port forwar…</td>
 <td>false — config.toml + SSH -R flags only, no API.</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -781,6 +869,7 @@ disqualifications.</p>
 <td>Only 5 commits total; roadmap items (Automatic TLS, HTTP control pane…</td>
 <td>DISQUALIFYING for our use case: the client (netmaskc) ships with a GUI interfac…</td>
 <td>false — no HTTP/REST control-plane exists; it's explicitly on the unimplemented…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -790,6 +879,7 @@ disqualifications.</p>
 <td>Only 3 commits total in the entire repo history — essentially a minim…</td>
 <td>Heavy overhead relative to our constraints: requires a full local Tor installat…</td>
 <td>false — no HTTP/REST control-plane and no JS/TS API of any kind; it's a pure Py…</td>
+<td></td>
 </tr>
 <tr>
 <td>1/5</td>
@@ -799,24 +889,11 @@ disqualifications.</p>
 <td>66 commits; has GitHub Actions CI, a CHANGELOG.md, and versioned rele…</td>
 <td>No TAP/TUN interfaces or root/admin required. Tunnel client is a plain Node.js …</td>
 <td>true — JavaScript/Node.js REST API (JWT-authenticated Express endpoints under /…</td>
+<td></td>
 </tr>
 </tbody>
 </table>
 <h2>Top tier (score 5) — best overall fit</h2>
-<h3>wstunnel — Viability: 5/5</h3>
-<p><strong>Language/license.</strong> Rust (v7+ rewrite; earlier versions in Haskell) — BSD-3-Clause.<sup class="cite">[1]</sup></p>
-<p><strong>Popularity.</strong> ~7.0k GitHub stars, 567 forks, 56 watchers - by far the most popular of the 4 tools surveyed. Has a dedicated docs site (wstunnel.erebe.eu), a public demo server, and commercial sponsorship. Widely referenced in firewall-bypass/DPI-evasion contexts and mentioned in various 'ngrok alternative' and censorship-circumvention roundups.<sup class="cite">[1]</sup></p>
-<p><strong>Maturity.</strong> Actively maintained by a single core maintainer (erebe) with community PRs/forks (567). Project has a real history: started in Haskell, was fully rewritten to Rust in v7.0.0 for maintainability, which is itself a maturity signal (author cared enough to redo it rather than abandon it). Single-maintainer risk exists but project has been running for years with steady releases, static binaries, CI, docs, and sponsor (Service Planet) backing. No signs of abandonment.<sup class="cite">[1]</sup></p>
-<p><strong>Client requirements.</strong> Client is a single static binary (no interpreter/runtime needed), unprivileged - just run <code>wstunnel client ...</code> as a normal user process. Does not require admin/root and does not create virtual network interfaces (unlike VPN-style tools); it only opens local TCP listeners/forwards on ports the user is allowed to bind (high ports need no elevation). This is very close to ideal for our 'no admin' requirement, but it's still a foreign compiled binary the user must download/trust and keep updated, and we'd have to bundle/distribute per-OS/per-arch binaries ourselves.<sup class="cite">[1]</sup></p>
-<p><strong>Server/API.</strong> Requires running a SEPARATE compiled Rust binary (wstunnel server) as its own OS process alongside the SvelteKit/Node app - it is NOT an embeddable Node/npm library, there is no way to run its server logic inside our existing Node HTTP process. On the cloud side we would need to: download/pin a wstunnel release binary (or build from source), run it as a systemd service or sidecar container, expose/manage its listening port, handle TLS certs (or rely on its auto-reload/self-signed cert feature), and route traffic between it and our Node app (e.g. wstunnel terminates the tunnel and forwards to a local TCP port that our Node app listens on, or vice versa). This is a genuine second service to deploy, monitor, restart on crash, and keep patched - it does not disappear into our existing process. Programmable API: see server_requirements notes<sup class="cite">[1]</sup></p>
-<p><strong>Verdict.</strong> The most mature and popular tool surveyed, with a single static Rust binary client requiring no admin/root and no runtime dependency (Node, Python, etc.) — as lean as a client gets short of reusing an OS-bundled tool like SSH. With the separate-server-process requirement now expected rather than disqualifying, this becomes a top recommendation; the one real caveat is its documented finickiness behind Nginx/Cloudflare/HAProxy, worth testing early against our actual serverless SvelteKit deployment's front door.<sup class="cite">[1]</sup></p>
-<h3>sish — Viability: 5/5</h3>
-<p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[5]</sup></p>
-<p><strong>Popularity.</strong> 4.7k GitHub stars, 335 forks, 54 watchers — clearly the most popular of the four tools surveyed, used in production by a public managed tunnel service.<sup class="cite">[5]</sup></p>
-<p><strong>Maturity.</strong> Actively maintained, well-documented, production-oriented (used to run a managed public service tuns.sh, sponsored by pico.sh). No obvious red flags; healthy commit cadence, CI (golangci-lint), Docker images, binary releases.<sup class="cite">[5]</sup></p>
-<p><strong>Client requirements.</strong> Excellent — client-side needs literally nothing beyond a standard OpenSSH client already present on virtually every OS (<code>ssh -R 80:localhost:8080 tuns.sh</code>). No admin/root required, no special binary to install, no network interface management. This is the best-in-class client experience of all 4 options.<sup class="cite">[5]</sup></p>
-<p><strong>Server/API.</strong> sish is a standalone Go SSH server binary (main.go, cmd/, sshmuxer/, httpmuxer/ packages) — it is NOT embeddable inside a Node.js process. It must run as a separate long-lived service/binary (or Docker container) on our cloud infra, listening on an SSH port (e.g. 2222) plus HTTP(S)/WS(S) ports for tunnel traffic, with its own TLS cert management, key-based auth files, and routing config. Our SvelteKit backend would sit behind/alongside it, or sish's HTTP muxer would need to front our app's routes — effectively adding a whole new infra component (process supervision, port allocation, key management, DNS wildcard) that must be deployed and operated independently from the Node app. Programmable API: see server_requirements notes<sup class="cite">[5]</sup></p>
-<p><strong>Verdict.</strong> Best-in-class client of the entire survey (literally just OpenSSH, already present on every OS, zero install/admin) combined with a mature, actively-maintained, production-proven server (backs the public tuns.sh service). Now that a separate server binary/process is an accepted requirement rather than a penalty, sish's only real cost is standing up and operating one more Go service — no worse than any other option in this tier, and its client leanness is unmatched.<sup class="cite">[5]</sup></p>
 <h3>Pangolin — Viability: 5/5</h3>
 <p><strong>Language/license.</strong> TypeScript / Next.js (server + dashboard); companion client 'newt' is Go — Dual-licensed: AGPL-3.0 (open source) and Fossorial Commercial License (for commercial use cases).<sup class="cite">[80]</sup><sup class="cite">[89]</sup><sup class="cite">[99]</sup></p>
 <p><strong>Popularity.</strong> 22.8k GitHub stars, 786 forks, 71 watchers, 8,469+ commits — very actively developed and increasingly popular self-hosted SASE/zero-trust platform. Its client connector 'newt' has its own repo with 909 stars / 87 forks. Explicitly recommended in the awesome-tunneling README as one of two 'production ready' self-hosted options (alongside frp).<sup class="cite">[80]</sup><sup class="cite">[89]</sup><sup class="cite">[99]</sup></p>
@@ -824,6 +901,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> The client connector, 'newt,' is a single static Go binary (get-newt.sh install script; also packaged for Windows via Inno Setup, Nix flake, Docker). Critically, newt implements WireGuard fully in userspace via netstack (gVisor's userspace TCP/IP stack) rather than creating a kernel TUN/TAP device — per its own README: 'it will use the information encoded (endpoint, public key) to bring up a WireGuard tunnel using netstack... fully in user space.' This means no OS-level TUN/TAP interface and no admin/root privileges are required to run it — it registers with the Pangolin server over HTTP+WebSocket using an ID/secret, a good fit for our constraint.<sup class="cite">[80]</sup><sup class="cite">[89]</sup><sup class="cite">[99]</sup></p>
 <p><strong>Server/API.</strong> Full server source available (TypeScript/Next.js control plane + Go 'Gerbil' WireGuard exit-node component), self-hostable via Docker Compose. Newt registers with Pangolin via plain HTTP requests to get a session token, then holds a WebSocket for control messages — i.e., there IS a documented HTTP+WebSocket control-plane protocol between client and server, though the full public developer-facing REST API surface for third-party backends (e.g., 'create site/resource via our own code') would need confirming against docs.pangolin.net, but the architecture (identity, sites, resources, clients all as first-class managed objects in a Next.js/TypeScript control plane) strongly suggests a workable admin API exists for programmatic registration. Programmable API: Likely true — TypeScript; Pangolin's control plane is a TypeScript/Next.js app with organized resources (sites, resources, clients, identity/access) and a documented registration handshake (HTTP session token + WebSocket control channel) used by the newt client itself, implying an internal REST/WS API that a SvelteKit backend could potentially call or emulate, though full public API docs would need direct verification for a supported 'register tunnel' surface.<sup class="cite">[80]</sup><sup class="cite">[89]</sup><sup class="cite">[99]</sup></p>
 <p><strong>Verdict.</strong> Best overall fit: hosted server binary/Docker deployment is expected and well-documented, the client (newt) is a single Go binary using userspace WireGuard (no TUN/TAP, no root) satisfying our hardest constraint, and the control plane is TypeScript with an HTTP+WebSocket registration protocol that aligns closely with 'hittable control-plane from our SvelteKit backend.' Very active development and strong adoption reduce abandonment risk versus the other candidates. Top pick.<sup class="cite">[80]</sup><sup class="cite">[89]</sup><sup class="cite">[99]</sup></p>
+<p><strong>Implementation-validated (5/5, confirmed).</strong> Cloned and traced: newt registers via a server-generated ID+secret exchanged over HTTP for a session token, then a persistent WebSocket for control messages (<code>newt/README.md</code>). The Integration API (Bearer org-scoped keys, off by default on self-hosted, enabled via <code>flags.enable_integration_api</code>) gives a real <code>site → public-resource → target</code> object graph — <code>PUT /org/{orgId}/site</code>, <code>PUT /org/{orgId}/public-resource</code>, <code>PUT /public-resource/{resourceId}/target</code> — that is essentially a literal match to "register a device, bind a hostname, route to its local port." Status polling confirmed via <code>GET /org/{orgId}/site/{niceId}</code> returning an <code>online</code> boolean, plus target-level HTTP/TCP health checks. See <code>implementation-plans/pangolin/PLAN.md</code> for the full trace, including a fleet-scale provisioning-key mechanism (<code>spk_...</code>) worth using instead of per-device API calls. <sup class="cite">[80]</sup><sup class="cite">[89]</sup><sup class="cite">[99]</sup></p>
 <h3>chiSSL — Viability: 5/5</h3>
 <p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[31]</sup><sup class="cite">[35]</sup></p>
 <p><strong>Popularity.</strong> 195 stars, 8 forks, 4 watchers (repo now lives under the 'unblocked' GitHub org, formerly NextChapterSoftware). Modest star count but polished docs site, Homebrew tap, and one-line server installer suggest real production usage internally at NextChapterSoftware/Unblocked.<sup class="cite">[31]</sup><sup class="cite">[35]</sup></p>
@@ -831,7 +909,40 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> Single static Go binary client (Homebrew install or prebuilt release binary), no TAP/TUN interfaces, no admin/root privileges. Client config can be a simple CLI invocation or a YAML profile file at <code>$HOME/.chissl/profile.yaml</code>.<sup class="cite">[31]</sup><sup class="cite">[35]</sup></p>
 <p><strong>Server/API.</strong> Full server source available (Go, <code>server/</code> directory), self-hostable with a one-line installer script, automatic TLS via Let's Encrypt domain or custom certs. Explicitly documents 'REST API and web dashboard' as a headline feature, with a published OpenAPI spec (openapi-public.yaml) and Redoc-rendered API reference at unblocked.github.io/chissl/api/. Supports SQLite (default) or PostgreSQL for persistence, admin/user RBAC, API tokens, and optional SSO -- this is the most API/control-plane-complete option in the batch. Programmable API: true -- Go server exposes a documented REST API (OpenAPI/Redoc spec published) plus a web dashboard, covering tunnel/listener management, multicast tunnels, users, and API tokens -- directly usable for programmatic registration from an external app.<sup class="cite">[31]</sup><sup class="cite">[35]</sup></p>
 <p><strong>Verdict.</strong> Best fit overall: fully self-hostable Go server with a real, documented REST API (OpenAPI spec + dashboard) for managing tunnels/listeners/tokens programmatically, and a client that is a single admin-free, TUN-free binary. Only caveats are its relatively small star count and its being a fork of chisel with a smaller community than the upstream project, but functionally it directly satisfies every hard requirement.<sup class="cite">[31]</sup><sup class="cite">[35]</sup></p>
+<p><strong>Implementation-validated (5/5, confirmed with one real gap).</strong> Cloned and traced: the REST API is real and extensive (<code>/api/users</code>, <code>/api/listeners</code>, <code>/api/tunnels</code>, <code>/api/sessions</code>, per-user API tokens), documented in a published OpenAPI YAML. But client linking is a <strong>static username:password pair</strong> (via <code>POST /api/users</code>), not a token/pairing exchange — and critically, <strong>routing is port-based only</strong>: each tunnel claims a distinct server TCP port, with no hostname/Host-header dispatch found anywhere in source. To get "one route = one client" (the scenario's actual requirement) you'd need to layer your own reverse proxy (Caddy/Traefik) in front of chiSSL doing the Host-based routing, maintaining a port↔client table yourself. Status polling is solid: <code>GET /api/tunnels/{id}</code> returns a <code>status</code> field, <code>GET /api/tunnels/active</code> filters to live ones. See <code>implementation-plans/chissl/PLAN.md</code> for the full trace including undocumented-but-real endpoints found only by reading source. <sup class="cite">[31]</sup><sup class="cite">[35]</sup></p>
+<h3>gost — Viability: 5/5</h3>
+<p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<p><strong>Popularity.</strong> 7.5k stars, 828 forks, 52 watchers; large multi-protocol proxy/tunnel toolkit with companion GUI (gostctl) and WebUI (gost-ui) projects, active Telegram/Google Group community<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<p><strong>Maturity.</strong> Actively maintained (558 commits, continuous releases, install script, Docker images, dedicated docs site gost.run); broad protocol support (websocket, grpc, quic, kcp, etc.) and a documented Web API — no major red flags.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<p><strong>Client requirements.</strong> Single Go binary, installable via releases page, install script, or Docker; used as a reverse-proxy/tunnel client with no admin/root required. Note: gost ALSO supports optional TUN/TAP device modes for VPN-like use cases, but that is an optional feature — for a plain reverse-proxy/tunnel client (websocket/TCP forwarding) it runs as a normal unprivileged process. Meets constraints as long as TUN/TAP mode is avoided.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<p><strong>Server/API.</strong> Full server source available (same repo, Go). Server exposes a genuine RESTful Web API (<code>-api</code> flag or <code>api:</code> config block) with HTTP Basic Auth, configurable path prefix, access logging, and a built-in Swagger/OpenAPI spec (testable at api.gost.run/swagger-ui) for dynamically creating/listing/removing services, listeners, and chains at runtime — this is a real hittable control-plane, not just a config file. Programmable API: true — Go server with a documented RESTful HTTP API (Basic Auth, Swagger/OpenAPI spec) for dynamic runtime configuration of services/tunnels; can be called from any backend including a SvelteKit/Node app via plain HTTP requests.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<p><strong>Verdict.</strong> Strong candidate: single unprivileged Go binary client, open server source, and a real documented REST API with Swagger docs for dynamically registering tunnels/services — exactly the kind of control-plane we want to hit from SvelteKit. Slight complexity cost is gost's very large feature surface (many protocols/concepts to learn) versus more minimal tools.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<p><strong>Upgraded to 5/5 after implementation deep dive</strong> (was 4/5 from docs review alone). Cloned and traced: gost's server exposes a genuine Swagger/OpenAPI-documented REST API (<code>-api :18080</code>) for full CRUD on services/chains/authers, and critically an <strong>Ingress object</strong> that binds a hostname directly to a server-issued tunnel-ID — <code>POST /config/ingresses</code> creates the hostname→tunnel-ID mapping our SvelteKit backend needs, and the client connects with <code>tunnel.id=&lt;uuid&gt;</code> in its connector config. This is arguably the cleanest single-binary rival to Pangolin's routing model in the entire 78-tool survey. The one gap: I could not confirm a documented "list connected tunnel clients" endpoint from the crawled prose docs — it likely exists in the Swagger spec at <code>api.gost.run/docs/swagger.yaml</code>, which wasn't deep-dived; treat status polling as needing a hands-on API-spec review before committing. See <code>implementation-plans/gost/PLAN.md</code>. <sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
+<h3>zrok — Viability: 5/5</h3>
+<p><strong>Language/license.</strong> Go — Apache-2.0.<sup class="cite">[42]</sup></p>
+<p><strong>Popularity.</strong> 4.7k stars, 222 forks, 30 watchers; backed by the OpenZiti project/NetFoundry, has a hosted zrok.io service, active YouTube 'office hours' series, large commit history (4,281 commits)<sup class="cite">[42]</sup></p>
+<p><strong>Maturity.</strong> Very actively maintained (huge commit volume, frequent releases, dedicated docs site docs.zrok.io, self-hosting guide, and a website/UI subproject); no red flags — one of the more professionally maintained projects in this batch.<sup class="cite">[42]</sup></p>
+<p><strong>Client requirements.</strong> Single binary (zrok CLI) across Windows/macOS/Linux/Raspberry Pi; built on OpenZiti's zero-trust overlay but does NOT require a traditional TUN/TAP virtual NIC or admin/root for basic HTTP/TCP share/access commands — it operates as a userspace SDK-driven client. Meets constraints for typical share/access use, though OpenZiti's broader ecosystem does have optional TUN-based 'ziti-edge-tunnel' clients for full VPN-style use that would NOT meet the constraint if chosen instead.<sup class="cite">[42]</sup></p>
+<p><strong>Server/API.</strong> Full server (controller + edge components) source available in the same repo (Go); single binary can contain the whole self-hosted service per the README ('Single binary contains everything you need'). Also ships a Go SDK (<code>sdk.CreateShare</code>, <code>sdk.NewListener</code>) for embedding zrok sharing directly into applications, and a REST API (rest_client_zrok/rest_server_zrok/rest_model_zrok directories generated from an OpenAPI spec) that a backend could call to create/manage shares programmatically. Programmable API: true — Go SDK for embedding sharing/tunnel logic, plus a generated REST client/server (OpenAPI-based) for the zrok controller that exposes share creation/management over HTTP; callable from a SvelteKit backend via plain HTTP even though no first-party JS/TS client is provided (would need to hit the REST endpoints directly or generate a TS client from the OpenAPI spec).<sup class="cite">[42]</sup></p>
+<p><strong>Verdict.</strong> Strong option: admin-free single-binary client, fully open server source, actively maintained by a serious team, and a genuine REST API + Go SDK for programmatic share management. Slightly more architecturally complex than rathole/bore (built atop the OpenZiti zero-trust overlay, controller+edge-router topology) which adds self-hosting overhead, but well worth serious evaluation for its control-plane API.<sup class="cite">[42]</sup></p>
+<p><strong>Upgraded to 5/5 after implementation deep dive</strong> (was 4/5 from docs review alone). Cloned and traced: zrok has a genuine <code>POST /enable</code> account-token→identity exchange for device pairing, and — the standout finding — a remarkable <strong>Agent API</strong> (<code>/agent/enroll</code>, <code>/agent/share</code>, <code>/agent/status</code>, <code>/agent/ping</code>, <code>/agent/share/http-healthcheck</code>) that lets the controller (our SvelteKit backend) remotely drive a client's tunnel <em>and</em> health-check it end-to-end without touching the device directly. This is the single best status/health story found across all 16 tools examined in the implementation-validation pass — genuinely end-to-end, not just "is the tunnel process alive." Tradeoff: heaviest underlying architecture of the group (a full OpenZiti zero-trust mTLS overlay). One open question: didn't confirm whether <code>zrok2 enable</code> auto-starts the agent daemon or needs a separate <code>zrok agent start</code> step. See <code>implementation-plans/zrok/PLAN.md</code>. <sup class="cite">[42]</sup></p>
 <h2>Strong tier (score 4) — solid fit, partial API/language mismatch</h2>
+<h3>wstunnel — Viability: 4/5</h3>
+<p><strong>Language/license.</strong> Rust (v7+ rewrite; earlier versions in Haskell) — BSD-3-Clause.<sup class="cite">[1]</sup></p>
+<p><strong>Popularity.</strong> ~7.0k GitHub stars, 567 forks, 56 watchers - by far the most popular of the 4 tools surveyed. Has a dedicated docs site (wstunnel.erebe.eu), a public demo server, and commercial sponsorship. Widely referenced in firewall-bypass/DPI-evasion contexts and mentioned in various 'ngrok alternative' and censorship-circumvention roundups.<sup class="cite">[1]</sup></p>
+<p><strong>Maturity.</strong> Actively maintained by a single core maintainer (erebe) with community PRs/forks (567). Project has a real history: started in Haskell, was fully rewritten to Rust in v7.0.0 for maintainability, which is itself a maturity signal (author cared enough to redo it rather than abandon it). Single-maintainer risk exists but project has been running for years with steady releases, static binaries, CI, docs, and sponsor (Service Planet) backing. No signs of abandonment.<sup class="cite">[1]</sup></p>
+<p><strong>Client requirements.</strong> Client is a single static binary (no interpreter/runtime needed), unprivileged - just run <code>wstunnel client ...</code> as a normal user process. Does not require admin/root and does not create virtual network interfaces (unlike VPN-style tools); it only opens local TCP listeners/forwards on ports the user is allowed to bind (high ports need no elevation). This is very close to ideal for our 'no admin' requirement, but it's still a foreign compiled binary the user must download/trust and keep updated, and we'd have to bundle/distribute per-OS/per-arch binaries ourselves.<sup class="cite">[1]</sup></p>
+<p><strong>Server/API.</strong> Requires running a SEPARATE compiled Rust binary (wstunnel server) as its own OS process alongside the SvelteKit/Node app - it is NOT an embeddable Node/npm library, there is no way to run its server logic inside our existing Node HTTP process. On the cloud side we would need to: download/pin a wstunnel release binary (or build from source), run it as a systemd service or sidecar container, expose/manage its listening port, handle TLS certs (or rely on its auto-reload/self-signed cert feature), and route traffic between it and our Node app (e.g. wstunnel terminates the tunnel and forwards to a local TCP port that our Node app listens on, or vice versa). This is a genuine second service to deploy, monitor, restart on crash, and keep patched - it does not disappear into our existing process. Programmable API: see server_requirements notes<sup class="cite">[1]</sup></p>
+<p><strong>Verdict.</strong> The most mature and popular tool surveyed, with a single static Rust binary client requiring no admin/root and no runtime dependency (Node, Python, etc.) — as lean as a client gets short of reusing an OS-bundled tool like SSH. With the separate-server-process requirement now expected rather than disqualifying, this becomes a top recommendation; the one real caveat is its documented finickiness behind Nginx/Cloudflare/HAProxy, worth testing early against our actual serverless SvelteKit deployment's front door.<sup class="cite">[1]</sup></p>
+<p><strong>Downgraded to 4/5 after implementation deep dive</strong> (was 5/5 from docs review alone). Cloned and traced the full README/docs: wstunnel has <strong>zero network API of any kind</strong> — no port to curl, no admin socket, nothing beyond CLI flags at process start and two hot-reloadable config files (a TLS cert pair and a <code>restrictions.yaml</code> access-control file). Its only per-connection "auth" is a static regex match against the raw <code>Authorization</code> header at WebSocket-upgrade time — not JWT verification, just string matching. Implementing the scenario's device-registration/linking/status-polling requirements means SvelteKit has to build essentially a full mini-PaaS around it: a device database, token issuance, YAML templating and safe distribution to the VPS, a per-device port-allocation and reverse-proxy layer (wstunnel only allocates raw ports, never hostnames), and all health polling from scratch (recommended: an HTTP <code>/health</code> check through the tunnel itself). This is substantially more custom backend work than Pangolin/chiSSL/gost/zrok require. See <code>implementation-plans/wstunnel/PLAN.md</code> for the full glue-code architecture this implies. <sup class="cite">[1]</sup></p>
+<h3>sish — Viability: 4/5</h3>
+<p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[5]</sup></p>
+<p><strong>Popularity.</strong> 4.7k GitHub stars, 335 forks, 54 watchers — clearly the most popular of the four tools surveyed, used in production by a public managed tunnel service.<sup class="cite">[5]</sup></p>
+<p><strong>Maturity.</strong> Actively maintained, well-documented, production-oriented (used to run a managed public service tuns.sh, sponsored by pico.sh). No obvious red flags; healthy commit cadence, CI (golangci-lint), Docker images, binary releases.<sup class="cite">[5]</sup></p>
+<p><strong>Client requirements.</strong> Excellent — client-side needs literally nothing beyond a standard OpenSSH client already present on virtually every OS (<code>ssh -R 80:localhost:8080 tuns.sh</code>). No admin/root required, no special binary to install, no network interface management. This is the best-in-class client experience of all 4 options.<sup class="cite">[5]</sup></p>
+<p><strong>Server/API.</strong> sish is a standalone Go SSH server binary (main.go, cmd/, sshmuxer/, httpmuxer/ packages) — it is NOT embeddable inside a Node.js process. It must run as a separate long-lived service/binary (or Docker container) on our cloud infra, listening on an SSH port (e.g. 2222) plus HTTP(S)/WS(S) ports for tunnel traffic, with its own TLS cert management, key-based auth files, and routing config. Our SvelteKit backend would sit behind/alongside it, or sish's HTTP muxer would need to front our app's routes — effectively adding a whole new infra component (process supervision, port allocation, key management, DNS wildcard) that must be deployed and operated independently from the Node app. Programmable API: see server_requirements notes<sup class="cite">[5]</sup></p>
+<p><strong>Verdict.</strong> Best-in-class client of the entire survey (literally just OpenSSH, already present on every OS, zero install/admin) combined with a mature, actively-maintained, production-proven server (backs the public tuns.sh service). Now that a separate server binary/process is an accepted requirement rather than a penalty, sish's only real cost is standing up and operating one more Go service — no worse than any other option in this tier, and its client leanness is unmatched.<sup class="cite">[5]</sup></p>
+<p><strong>Downgraded to 4/5 after implementation deep dive</strong> (was 5/5 from docs review alone). Cloned and traced: sish does have a small HTTP admin API (<code>--admin-console</code>) — <code>GET /_sish/api/clients</code> (list live SSH sessions with pubkey fingerprints and bound routes) and <code>POST /_sish/api/disconnectclient/&lt;name&gt;</code> — but it is <strong>read/kill only</strong>, with zero endpoint to add or revoke authorized keys. The actual authorization surface is either a watched <code>authorized_keys</code>-style directory, or a synchronous per-connection HTTP callback (<code>--authentication-key-request-url</code>) that sish itself POSTs to on every SSH connection attempt and treats HTTP 200 as approval — this callback pattern is genuinely useful (it turns "authorize a device" into a plain DB-row lookup in our own backend) but there is no built-in pairing/enrollment/access-token flow at all; the author's own documented onboarding pattern is literally an admin curling a GitHub <code>.keys</code> URL into the watched directory. Routing (subdomain-per-connection, Host-header dispatch) remains genuinely automatic and free once a tunnel is up — the best routing story of any tool that isn't Pangolin/gost. See <code>implementation-plans/sish/PLAN.md</code> for the full authorize-key callback design. <sup class="cite">[5]</sup></p>
 <h3>frp — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Go — Apache-2.0.<sup class="cite">[78]</sup><sup class="cite">[89]</sup></p>
 <p><strong>Popularity.</strong> Extremely popular: 109.5k GitHub stars, 15.2k forks, 1.6k watchers, 1,524+ commits. One of the most widely used open-source reverse-proxy/tunnel tools; has an active related-projects ecosystem (gofrp/plugin, gofrp/tiny-frpc), CI badges, GitHub Sponsors, and corporate sponsors (JetBrains, RapidProxy, Olares). Very strong, long-standing adoption signal.<sup class="cite">[78]</sup><sup class="cite">[89]</sup></p>
@@ -839,20 +950,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> Single static Go binary (frpc) — no TUN/TAP, no admin/root required for standard TCP/HTTP/HTTPS proxying (root only needed if binding to privileged ports &lt;1024, same as any normal server software). Config-file driven (TOML) but can also be driven via CLI flags/env vars. There's also a 'tiny-frpc' variant (~3.5MB) for constrained devices. Overall this is an excellent, simple client story.<sup class="cite">[78]</sup><sup class="cite">[89]</sup></p>
 <p><strong>Server/API.</strong> Full server (frps) source code available in the same repo (Go). frps does expose an HTTP-based Admin API / Dashboard (documented in the frp docs, e.g. <code>/api/*</code> endpoints for reload, proxy status, server info) that can be queried, though it's primarily geared toward admin/monitoring and reload-of-config rather than a full first-class 'create tunnel' REST resource-oriented API for provisioning arbitrary tunnels at runtime without config. Frp's typical model is: client authenticates with a token and requests proxies itself (proxies are largely declared in the frpc config, though frpc also has features for env-var and dynamic config, and there's an admin API on the client side too). It's more 'config/token-driven binary with a monitoring/admin HTTP API' than a full programmatic-tunnel-creation REST API, but it is scriptable and self-hostable, and the wire protocol/API is documented enough that a backend could plausibly automate it (e.g., by templating frpc config and restarting/reloading, or via its client admin API). Programmable API: Partially true — Go; frps/frpc expose an HTTP Admin API (dashboard, reload, proxy/traffic stats) documented in frp's docs, and frpc supports config reload without restart. It is not a purpose-built 'POST /tunnels' REST API for on-demand tunnel registration, but the admin API + reload mechanism + token auth model gives a workable path to drive it programmatically from a backend.<sup class="cite">[78]</sup><sup class="cite">[89]</sup></p>
 <p><strong>Verdict.</strong> Best-in-class maturity, adoption, and client simplicity (single static Go binary, no TUN/root) make frp a very strong candidate; the main gap versus a 'true' JS/TS control-plane API is that tunnel provisioning is more config/reload-oriented than resource-style REST, requiring us to write glue code (config templating + reload, or driving the admin API) rather than calling a clean 'create tunnel' endpoint. Still a top pick given its maturity and self-hostability.<sup class="cite">[78]</sup><sup class="cite">[89]</sup></p>
-<h3>gost — Viability: 4/5</h3>
-<p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
-<p><strong>Popularity.</strong> 7.5k stars, 828 forks, 52 watchers; large multi-protocol proxy/tunnel toolkit with companion GUI (gostctl) and WebUI (gost-ui) projects, active Telegram/Google Group community<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
-<p><strong>Maturity.</strong> Actively maintained (558 commits, continuous releases, install script, Docker images, dedicated docs site gost.run); broad protocol support (websocket, grpc, quic, kcp, etc.) and a documented Web API — no major red flags.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
-<p><strong>Client requirements.</strong> Single Go binary, installable via releases page, install script, or Docker; used as a reverse-proxy/tunnel client with no admin/root required. Note: gost ALSO supports optional TUN/TAP device modes for VPN-like use cases, but that is an optional feature — for a plain reverse-proxy/tunnel client (websocket/TCP forwarding) it runs as a normal unprivileged process. Meets constraints as long as TUN/TAP mode is avoided.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
-<p><strong>Server/API.</strong> Full server source available (same repo, Go). Server exposes a genuine RESTful Web API (<code>-api</code> flag or <code>api:</code> config block) with HTTP Basic Auth, configurable path prefix, access logging, and a built-in Swagger/OpenAPI spec (testable at api.gost.run/swagger-ui) for dynamically creating/listing/removing services, listeners, and chains at runtime — this is a real hittable control-plane, not just a config file. Programmable API: true — Go server with a documented RESTful HTTP API (Basic Auth, Swagger/OpenAPI spec) for dynamic runtime configuration of services/tunnels; can be called from any backend including a SvelteKit/Node app via plain HTTP requests.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
-<p><strong>Verdict.</strong> Strong candidate: single unprivileged Go binary client, open server source, and a real documented REST API with Swagger docs for dynamically registering tunnels/services — exactly the kind of control-plane we want to hit from SvelteKit. Slight complexity cost is gost's very large feature surface (many protocols/concepts to learn) versus more minimal tools.<sup class="cite">[40]</sup><sup class="cite">[45]</sup></p>
-<h3>zrok — Viability: 4/5</h3>
-<p><strong>Language/license.</strong> Go — Apache-2.0.<sup class="cite">[42]</sup></p>
-<p><strong>Popularity.</strong> 4.7k stars, 222 forks, 30 watchers; backed by the OpenZiti project/NetFoundry, has a hosted zrok.io service, active YouTube 'office hours' series, large commit history (4,281 commits)<sup class="cite">[42]</sup></p>
-<p><strong>Maturity.</strong> Very actively maintained (huge commit volume, frequent releases, dedicated docs site docs.zrok.io, self-hosting guide, and a website/UI subproject); no red flags — one of the more professionally maintained projects in this batch.<sup class="cite">[42]</sup></p>
-<p><strong>Client requirements.</strong> Single binary (zrok CLI) across Windows/macOS/Linux/Raspberry Pi; built on OpenZiti's zero-trust overlay but does NOT require a traditional TUN/TAP virtual NIC or admin/root for basic HTTP/TCP share/access commands — it operates as a userspace SDK-driven client. Meets constraints for typical share/access use, though OpenZiti's broader ecosystem does have optional TUN-based 'ziti-edge-tunnel' clients for full VPN-style use that would NOT meet the constraint if chosen instead.<sup class="cite">[42]</sup></p>
-<p><strong>Server/API.</strong> Full server (controller + edge components) source available in the same repo (Go); single binary can contain the whole self-hosted service per the README ('Single binary contains everything you need'). Also ships a Go SDK (<code>sdk.CreateShare</code>, <code>sdk.NewListener</code>) for embedding zrok sharing directly into applications, and a REST API (rest_client_zrok/rest_server_zrok/rest_model_zrok directories generated from an OpenAPI spec) that a backend could call to create/manage shares programmatically. Programmable API: true — Go SDK for embedding sharing/tunnel logic, plus a generated REST client/server (OpenAPI-based) for the zrok controller that exposes share creation/management over HTTP; callable from a SvelteKit backend via plain HTTP even though no first-party JS/TS client is provided (would need to hit the REST endpoints directly or generate a TS client from the OpenAPI spec).<sup class="cite">[42]</sup></p>
-<p><strong>Verdict.</strong> Strong option: admin-free single-binary client, fully open server source, actively maintained by a serious team, and a genuine REST API + Go SDK for programmatic share management. Slightly more architecturally complex than rathole/bore (built atop the OpenZiti zero-trust overlay, controller+edge-router topology) which adds self-hosting overhead, but well worth serious evaluation for its control-plane API.<sup class="cite">[42]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed).</strong> Cloned and traced: frp's admin API (<code>GET /api/v2/clients/{key}</code> etc.) on both <code>frps</code> and <code>frpc</code> is real but <strong>read-only status/monitoring</strong>, not a tunnel-creation endpoint — there is no native per-device token concept, just one shared server-wide token. The only path to a scenario-matching "register a device" flow is frp's custom <strong><code>Login</code> server-plugin HTTP callback</strong>, which we'd implement entirely ourselves (frp calls out to our endpoint on client login, we approve/deny and can attach metadata) — 100% custom glue on top of a plugin hook, not a native API. Routing itself is clean subdomain/path vhosting configured per-proxy ahead of time, no API call needed once set. Could not confirm an API to force-disconnect a single already-connected client (only bulk proxy delete found). See <code>implementation-plans/frp/PLAN.md</code>. <sup class="cite">[78]</sup><sup class="cite">[89]</sup></p>
 <h3>piko — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[91]</sup></p>
 <p><strong>Popularity.</strong> 2.2k stars, 87 forks, 12 watchers; positioned explicitly as an open-source Ngrok alternative built for production traffic and Kubernetes hosting -- solid adoption signal for a project this size, with Prometheus/Grafana dashboards and Helm charts included.<sup class="cite">[91]</sup></p>
@@ -860,13 +958,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> Piko agent (<code>piko agent http/tcp</code>) or Piko forward (<code>piko forward</code>) run as simple CLI/binary processes making outbound-only connections to the Piko server. No TAP/TUN interface and no root/admin required. There is also a Go SDK for embedding a <code>net.Listener</code> directly in an application.<sup class="cite">[91]</sup></p>
 <p><strong>Server/API.</strong> Full server source available (Go), designed to run as a cluster of nodes behind a load balancer/Kubernetes Gateway. Has a Prometheus endpoint, access logging, and a documented status/admin API for monitoring; endpoints are registered dynamically by upstream agents connecting -- no static config needed per endpoint. Programmable API: Partial/true -- there is a Go SDK (<code>piko</code> Go module) for opening listeners programmatically and a status/observability API, but no TypeScript/JS-native server API; a SvelteKit backend would need to shell out to the Go agent/CLI or hit the Go server's HTTP endpoints rather than use a native JS SDK.<sup class="cite">[91]</sup></p>
 <p><strong>Verdict.</strong> Strong architectural fit: outbound-only, no TUN/root client, hosted Go server binary is fine, and endpoints register dynamically without static config, which is close to a control-plane model. Lacks a native TS/JS SDK, so integration from SvelteKit would go through HTTP/CLI rather than an idiomatic JS library, but is otherwise one of the better fits.<sup class="cite">[91]</sup></p>
-<h3>SirTunnel — Viability: 4/5</h3>
-<p><strong>Language/license.</strong> Python (~50-line script) + Caddy (Go) on the server side — MIT.<sup class="cite">[95]</sup></p>
-<p><strong>Popularity.</strong> 1.6k stars, 125 forks, 14 watchers -- popular for its extreme minimalism; has multiple community forks (matiboy/SirTunnel, daps94/SirTunnel) adding features like multi-user and stale-tunnel cleanup.<sup class="cite">[95]</sup></p>
-<p><strong>Maturity.</strong> Only 23 commits -- intentionally frozen/minimal ('I'm unlikely to add many features moving forward' per README); author explicitly points to community forks for more features. Low commit velocity is by design, not neglect, but also means limited ongoing support.<sup class="cite">[95]</sup></p>
-<p><strong>Client requirements.</strong> No special client at all -- uses a standard SSH client's remote port forwarding (<code>ssh -tR ...</code>). No TAP/TUN interface, no root/admin required, and no custom install needed beyond having an SSH client (already present on virtually all systems).<sup class="cite">[95]</sup></p>
-<p><strong>Server/API.</strong> Server source available: just Caddy (open source Go webserver) + a 50-line Python script (sirtunnel.py) that calls Caddy's built-in JSON admin API to add/remove reverse-proxy routes on the fly. It is effectively config-file-free and stateless -- the 'control plane' is literally Caddy's existing HTTP admin API. Programmable API: True, indirectly -- Caddy's JSON admin API (typically on :2019) is a genuine HTTP control plane for registering routes/certs programmatically; SirTunnel's Python script is a thin wrapper we could reimplement or call directly from our own glue code (Caddy's admin API is not TS/JS but is easily driven by any HTTP client including SvelteKit).<sup class="cite">[95]</sup></p>
-<p><strong>Verdict.</strong> Excellent client-side fit (nothing but a standard SSH client, zero install, zero privileges) and the server exposes a genuine, well-documented HTTP control plane via Caddy's admin API that we could call directly from SvelteKit to register/manage routes. Main downside is the project's minimalism/low maintenance and that SSH availability/config is still an extra moving part versus a purpose-built client binary.<sup class="cite">[95]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed).</strong> Cloned and traced: piko has <strong>no registration endpoint of any kind</strong> — clients self-declare arbitrary endpoint IDs. Linking is pure JWT minting by us: SvelteKit signs a token (<code>{"piko":{"endpoints":["device-id"]}}</code>) with a shared HMAC/RSA/ECDSA key, hands it to the client, which presents it via <code>--connect.token</code> (agent) or the Go SDK. Routing uses an <code>x-piko-endpoint</code> header or Host-subdomain — no bind-API call needed at all, which is architecturally clean. Status confirmed directly in source: <code>/status/upstream/endpoints</code> (<code>server/status/client/upstream.go</code>). The real gap: <strong>piko has no clean single-device token-revoke primitive</strong> — a genuine architectural limitation, not a research gap. Very clean Go-native integration if aipotluck-local-client's monitor service were Go rather than Python/Node. See <code>implementation-plans/piko/PLAN.md</code>. <sup class="cite">[91]</sup></p>
 <h3>boringproxy — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[96]</sup><sup class="cite">[98]</sup></p>
 <p><strong>Popularity.</strong> 1.4k stars, 131 forks, 21 watchers; has a dedicated website (boringproxy.io), sponsor (TakingNames.io) with custom-domain integration, and an active community forum (IndieBits) -- moderate but real adoption for a self-hosted ngrok alternative.<sup class="cite">[96]</sup><sup class="cite">[98]</sup></p>
@@ -874,6 +966,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> Single Go binary CLI (<code>boringproxy client -server ... -token ...</code>), no TAP/TUN interface. Client does not need root/admin -- it's the server that may need <code>cap_net_bind_service</code> (or root) to bind ports 80/443, not the client.<sup class="cite">[96]</sup><sup class="cite">[98]</sup></p>
 <p><strong>Server/API.</strong> Full server source available in Go (api.go, tunnel_manager.go, auth.go, ui_handler.go), includes an admin REST API (api.go) that already backs boringproxy's own web UI for managing tunnels/clients/tokens -- this is the closest thing among these 8 to an existing HTTP control-plane for tunnel management, though it's a Go API, not TS/JS. Programmable API: True, Go -- api.go implements a REST-style HTTP API used internally by boringproxy's own web UI for managing clients, tunnels, and tokens; no official TypeScript/JS SDK, but the API is plain HTTP/JSON so a SvelteKit app could call it directly.<sup class="cite">[96]</sup><sup class="cite">[98]</sup></p>
 <p><strong>Verdict.</strong> Good overall fit: TUN-free, admin-free simple Go client binary; hosted Go server binary is expected/fine; and it already ships a REST API (api.go) plus web UI that we could call directly from SvelteKit for programmatic tunnel registration. Main gaps are no native TS/JS server library and somewhat slower recent maintenance cadence versus piko or portr.<sup class="cite">[96]</sup><sup class="cite">[98]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed — one of the stronger Strong-Tier results).</strong> Cloned and traced: boringproxy ships a genuine REST API (<code>api.go</code>) — <code>/api/tunnels</code>, <code>/api/tokens</code>, <code>/api/clients</code>, <code>/api/users</code>, all bearer-token authenticated — that already backs its own web UI. The client self-registers with a token and polls for assigned tunnels; critically, <strong>the server generates per-tunnel restricted SSH keypairs itself</strong> (<code>tunnel_manager.go</code>), so we don't need our own key-provisioning logic. <code>POST /api/tunnels</code> binds a domain to a client-name directly, matching the scenario's routing requirement cleanly. Open question: whether <code>DELETE /api/tokens</code> is actually HTTP-reachable (code exists but wasn't confirmed wired into the request-routing switch) — matters for instant revocation. No dedicated connection-status endpoint was confirmed; recommend an end-to-end HTTP health probe as the fallback. See <code>implementation-plans/boringproxy/PLAN.md</code>. <sup class="cite">[96]</sup><sup class="cite">[98]</sup></p>
 <h3>rustunnel — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Rust (server, client), TypeScript (dashboard-ui) — AGPL-3.0.<sup class="cite">[56]</sup></p>
 <p><strong>Popularity.</strong> 656 GitHub stars, 48 forks, 3 watchers, 315 commits. Has a hosted managed service (rustunnel.com) with pay-as-you-go pricing, plus MCP-server integration for AI agents (Cursor/Claude Code/Windsurf) and a Skillselion listing — indicates decent traction, and it's positioned directly as an 'ngrok alternative.'<sup class="cite">[56]</sup></p>
@@ -881,13 +974,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> Client is a single Rust binary (<code>rustunnel</code>) with a setup wizard (<code>rustunnel setup</code>), CLI flags (<code>rustunnel http 3000</code>), and a <code>--json</code> machine-readable output mode. No TAP/TUN network interface — it's a WebSocket-based reverse tunnel client, no admin/root required for typical CLI usage (only production <em>server</em> deployment docs mention systemd/root, not the client).<sup class="cite">[56]</sup></p>
 <p><strong>Server/API.</strong> Full server source available (Rust) — self-hostable, OR use their hosted edge servers (eu/us/ap regions) directly, meaning we could adopt the hosted server without running our own if desired, but the ask is to self-host it. Server exposes a documented REST API (dashboard port, default 8443) with Bearer-token auth: GET/DELETE /api/tunnels, GET /api/tunnels/:id/requests, POST/DELETE /api/tokens, GET /api/history, plus a machine-readable OpenAPI 3.0 spec at /api/openapi.json. Note: the REST API is for tunnel introspection/management/token issuance/history — actual tunnel <em>creation</em> still happens by the client dialing the control-plane WebSocket (port 4040) with a token, not via a 'create tunnel' REST call. Programmable API: true — language=Rust backend exposing REST/OpenAPI (HTTP+JSON) for listing/closing tunnels, managing API tokens, and viewing captured request history/replay; dashboard frontend is TypeScript. Tunnel <em>registration</em> itself is still client-initiated via WebSocket handshake with a pre-issued token (which itself IS creatable via POST /api/tokens), so a control-plane-driven workflow (mint token via REST, then start rustunnel client with token) is achievable.<sup class="cite">[56]</sup></p>
 <p><strong>Verdict.</strong> Best-fit client story in the batch: single Rust binary, no TAP/TUN, no root required, plus a genuine documented REST/OpenAPI control-plane (with a TypeScript dashboard) we could integrate with our SvelteKit app to mint tokens and monitor/manage tunnels programmatically. Main caveats: AGPL-3.0 license (copyleft implications for a hosted product) and tunnel creation itself is still client-CLI-driven rather than a pure 'create tunnel via POST' API — we'd combine REST token-issuance with client launch.<sup class="cite">[56]</sup></p>
-<h3>tunwg — Viability: 4/5</h3>
-<p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[72]</sup></p>
-<p><strong>Popularity.</strong> 287 stars, 21 forks, 8 watchers. Public tunwg.com hosted instance; positioned as an ngrok alternative.<sup class="cite">[72]</sup></p>
-<p><strong>Maturity.</strong> Active — 18 commits, CI workflows, devcontainer, Docker images published to ghcr.io. Self-describes remaining future work (e.g. distributed servers) but no red flags; server is explicitly stateless/simple.<sup class="cite">[72]</sup></p>
-<p><strong>Client requirements.</strong> CONFIRMED: does NOT need a TUN/TAP device or admin/root. Despite being 'WireGuard-userspace-based,' tunwg runs its own userspace TCP/IP stack via gVisor netstack and speaks WireGuard purely over a UDP socket in-process — no kernel WireGuard interface, no elevated privileges. Ships as a single Go binary (or Docker image with --network=host) for Linux/Mac/Windows.<sup class="cite">[72]</sup></p>
-<p><strong>Server/API.</strong> Source available (Go). Self-hostable via <code>go install</code> + env vars (TUNWG_RUN_SERVER, TUNWG_API, TUNWG_IP, TUNWG_PORT, TUNWG_AUTH) or Docker; server is fully stateless (no DB), listens on 80/443 + a UDP WireGuard port. No HTTP/REST control-plane API for external tunnel registration — it's env/config driven. However it does offer a Go library API: <code>tunwg.NewListener(name)</code> returns a net.Listener usable directly in a Go program. Programmable API: partial/true for Go only — <code>tunwg.NewListener()</code> is a real programmatic Go API for embedding tunnel creation directly into a Go server process; no JS/TS SDK and no HTTP control-plane API for cross-language/registration-style use from SvelteKit.<sup class="cite">[72]</sup></p>
-<p><strong>Verdict.</strong> Strongest client-side fit in this batch: no TUN device despite being WireGuard-based, no root, single small binary, persistent URLs, built-in auto-TLS. Server is open source, stateless, and simple to self-host as a single binary. The only gap versus a 5 is the lack of an HTTP/REST or JS/TS control-plane API — the closest thing is a Go-only embeddable listener API, so our SvelteKit app would still need to shell out to the CLI or env-configure a fixed relay rather than hit a REST endpoint.<sup class="cite">[72]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed, with a real licensing caveat).</strong> Cloned and traced: rustunnel has a genuinely documented REST/OpenAPI control-plane on its dashboard port (default 8443) — Bearer-token auth, <code>POST /api/tokens</code> for issuance, <code>GET /api/tunnels</code>/<code>GET /api/history</code> for listing/history — backed by a real Next.js (TypeScript, though not SvelteKit) reference dashboard. Custom fixed subdomains are <strong>plan-gated</strong> in the schema (<code>allow_custom_subdomains</code>), a real constraint on the routing model. The bigger issue: <strong>rustunnel is AGPL-3.0-licensed</strong> — the same legal exposure already flagged for go-http-tunnel, requiring either open-sourcing our integration or purchasing a commercial license before embedding it in a commercial SaaS backend. See <code>implementation-plans/rustunnel/PLAN.md</code>. <sup class="cite">[56]</sup></p>
 <h3>Portal (portal-tunnel) — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[29]</sup></p>
 <p><strong>Popularity.</strong> 269 stars, 28 forks, 1 watcher. Tagged in anderspitman/awesome-tunneling. Includes VS Code extension, Claude/Cursor plugin integrations, and a frontend/docs site -- signs of an emerging but real ecosystem.<sup class="cite">[29]</sup></p>
@@ -895,6 +982,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> Single Go binary (portal-tunnel CLI / SDK), no TAP/TUN, no admin/root privileges required -- backend makes outbound-only reverse connections to the relay (no inbound listener, no elevated ports needed on the client side).<sup class="cite">[29]</sup></p>
 <p><strong>Server/API.</strong> Relay server source fully available (Go), self-hostable (Dockerfile, docker-compose.yml, config.toml). Crucially it exposes a genuine HTTP control-plane API under <code>/sdk/*</code>: <code>POST /sdk/register/challenge</code>, <code>POST /sdk/register</code>, <code>GET /sdk/connect</code>, <code>POST /sdk/renew</code>, <code>POST /sdk/unregister</code> -- i.e., programmatic lease/tunnel registration, renewal, and teardown via REST-style calls (auth via SIWE/secp256k1 signature challenge + JWT access tokens). Also supports optional dedicated TCP/UDP port allocation. Programmable API: true -- Go relay server exposes an HTTP/JSON control-plane API (<code>/sdk/register</code>, <code>/sdk/connect</code>, <code>/sdk/renew</code>, <code>/sdk/unregister</code>) suitable for driving tunnel lifecycle programmatically from an external app (e.g., our SvelteKit backend could call this API directly or shell out to the SDK).<sup class="cite">[29]</sup></p>
 <p><strong>Verdict.</strong> Strongest overall fit among the Go options: self-hostable open-source relay with a real HTTP control-plane for programmatic registration/renewal/teardown, no TAP/TUN, no root, single-binary client, and clearly the most actively maintained project surveyed. Docks a point only because the control-plane is Go/JSON rather than a first-class TypeScript SDK, and the protocol (SIWE-signed registration, keyless TLS, QUIC) is more complex than a typical simple REST integration.<sup class="cite">[29]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed with a real auth-model caveat).</strong> Cloned and traced: Portal's <code>/sdk/*</code> control-plane is real and versioned, and the auth mechanism is confirmed as <strong>SIWE</strong> (Sign-In-With-Ethereum style) — the client generates a local secp256k1 identity, requests a challenge from <code>/sdk/register/challenge</code>, signs it with <code>SignEthereumPersonalMessage</code>, and posts the signed message to <code>/sdk/register</code> to receive an ES256K lease-scoped access token. This is powerful (no shared pre-issued token to leak) but a genuinely unusual integration model — crypto-wallet-style message signing rather than a plain bearer token or API key, adding real client-side complexity versus the other options here. TLS/DNS/ACME are fully automated (embedded DNS + DNSSEC). Whether policy revocation applies to already-open sessions instantly, or only on next lease renewal, was not confirmed empirically. See <code>implementation-plans/portal/PLAN.md</code>. <sup class="cite">[29]</sup></p>
 <h3>gt — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Rust — Apache-2.0.<sup class="cite">[65]</sup></p>
 <p><strong>Popularity.</strong> 141 stars, 39 forks, 13 watchers. Backed by ao-space (a Chinese open-source personal cloud project), used as part of that ecosystem; not widely adopted outside it.<sup class="cite">[65]</sup></p>
@@ -902,6 +990,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> No TAP/TUN interface — it's a userspace WebSocket(s)/HTTP(s)/TCP relay proxy, not a VPN. No root/admin required. Simple: single static binary (<code>gt client</code>) or Docker image; zero-config startup opens a web admin UI to configure. Very low friction.<sup class="cite">[65]</sup></p>
 <p><strong>Server/API.</strong> Server source fully available (Rust, same repo). Config-file-driven (YAML) with a bundled web configuration UI for setup, not a REST/programmatic API intended for external orchestration. No documented TypeScript/JS SDK. Programmable API: false — the server exposes a browser-based web admin config UI (not a documented REST API) and is driven by YAML config files/CLI signals (reload/restart/stop); no TS/JS SDK found.<sup class="cite">[65]</sup></p>
 <p><strong>Verdict.</strong> Meets all hard client constraints (no TUN, no root, single binary) and the hosted server binary model fits well (prebuilt release binaries + Docker images). Lacks a clean programmatic HTTP API for tunnel registration — would need to drive it via generated YAML config + reload signals from glue code. Good candidate if we're willing to shell out to config-file management.<sup class="cite">[65]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed).</strong> Cloned and traced: gt is actually a Go engine (<code>libcs/</code>) wrapped by a thin Rust/CGO shell. It ships a Gin-backed admin Web UI/REST API (<code>/api/login</code>, <code>/config/save</code>, <code>/connection/list</code>) plus — the more useful primitive for our scenario — an <strong><code>authAPI</code> HTTP callback</strong> that mirrors sish's pattern: gt calls out to our own backend to approve a connection, so "authorize a device" becomes a plain DB lookup in our code rather than a file/config write to the gt host. Routing is <code>hostPrefix</code>-based subdomain routing, defaulting to the client <code>id</code> if unset — clean and automatic. Whether <code>/config/save</code> hot-reloads the running server or needs a restart signal is unverified; recommend using the <code>authAPI</code> callback path specifically to sidestep that question. No admin API found to force-disconnect a live client. See <code>implementation-plans/gt/PLAN.md</code>. <sup class="cite">[65]</sup></p>
 <h3>specter — Viability: 4/5</h3>
 <p><strong>Language/license.</strong> Go — MIT.<sup class="cite">[71]</sup></p>
 <p><strong>Popularity.</strong> 48 stars, 1 fork, 4 watchers. Small but polished single-maintainer project ('like ngrok, but more ambitious with DHT for flavor'); no major notable third-party adoption found.<sup class="cite">[71]</sup></p>
@@ -909,13 +998,7 @@ disqualifications.</p>
 <p><strong>Client requirements.</strong> No TAP/TUN — client is a userspace Go binary using QUIC/TLS transport to tunnel L7 (HTTP/S) and L4 (TCP) traffic, including to Unix sockets/named pipes. No root/admin required. Simple YAML config or config-free <code>client expose</code>/<code>client serve</code> modes; single binary, cross-platform including macOS/Windows/Linux.<sup class="cite">[71]</sup></p>
 <p><strong>Server/API.</strong> Full server source available (Go, self-hostable 'gateway' with Chord DHT overlay for routing, ACME/Let's Encrypt integration). Client offers a documented local management HTTP API/UI when started with <code>--server [host]:[port]</code> (manage custom hostnames, unpublish, release, list tunnels) — this is a management API on the CLIENT side, not the server's control-plane for creating tunnels; server itself is still primarily config/CLI driven (YAML apex config, gateway operator docs). Programmable API: partial/true — Go-based local management API on the client (<code>--server</code> flag) for tunnel lifecycle operations; the gateway/server itself doesn't expose a documented public REST API for external registration, but is source-available and could be extended.<sup class="cite">[71]</sup></p>
 <p><strong>Verdict.</strong> Excellent fit for the hard client constraints (no TUN, no root, single Go binary, even config-free modes) and the project is clearly actively engineered with strong docs. The programmable angle is only partial (client-side management API, not a full server control-plane), so registering tunnels programmatically from a SvelteKit backend would require either using the client API pattern or extending the Go server — feasible since source is available, but not a plug-and-play REST API out of the box.<sup class="cite">[71]</sup></p>
-<h3>Punchmole — Viability: 4/5</h3>
-<p><strong>Language/license.</strong> JavaScript (Node.js) — GPL-2.0.<sup class="cite">[47]</sup></p>
-<p><strong>Popularity.</strong> 19 stars, 4 forks, 1 watcher. Author states it has been used 'extensively for heavy-duty websocket applications' and deployed on Kubernetes with 20 replicas handling thousands of req/s, but no widespread public adoption evidenced (no notable dependents listed on GitHub).<sup class="cite">[47]</sup></p>
-<p><strong>Maturity.</strong> 46 commits total, single-maintainer project (degola). README describes it as 'experimental for quite a while' but claims real production use. No tagged releases visible in the extracted page; no CI badges found. Small commit count and single-author project are mild red flags for long-term maintenance, though the code is simple/small (low surface area to break).<sup class="cite">[47]</sup></p>
-<p><strong>Client requirements.</strong> No TAP/TUN interfaces, no admin/root privileges. Pure Node.js WebSocket client — install via <code>npm install -g punchmole</code> and run <code>punchmole</code> configured entirely via env vars (PUNCHMOLE_API_KEY, DOMAIN, TARGET_URL, PUNCHMOLE_ENDPOINT_URL). It is explicitly importable as a library: <code>import { PunchmoleClient } from 'punchmole'</code> and called as a function that returns an EventEmitter (registered/request/request-end events) inside your own Node.js process — meaning for a Node.js host app it can be embedded directly with zero external process/binary needed at all, which is even simpler than a CLI/binary requirement.<sup class="cite">[47]</sup></p>
-<p><strong>Server/API.</strong> Server source is fully available in the same repo (PunchmoleServer.js, server.js, app.js). It is a single HTTP port that upgrades to WebSocket, forwarding requests by Host header to the matching connected client. Deployable via npm global install, Docker, or Kubernetes manifest included in repo. Critically, it also exposes a programmatic Node.js embedding API: <code>import { PunchmoleServer } from 'punchmole'; PunchmoleServer(PORT, API_KEYS, PATH, logger)</code> — this can be mounted inside an existing Node/Express-style app rather than only run as a standalone binary. Programmable API: true — JavaScript/Node.js. Both PunchmoleServer() and PunchmoleClient() are plain importable functions/EventEmitters usable directly inside a host Node.js process (e.g., embed the server logic inside a SvelteKit/Node backend and programmatically register domains/API keys via env-var-equivalent function args), though this is an in-process embed rather than a separate HTTP REST control-plane for remote registration.<sup class="cite">[47]</sup></p>
-<p><strong>Verdict.</strong> Meets all hard client constraints (no TUN/TAP, no root, trivial npm install or embeddable JS import) and the server is a small self-hostable Node.js WebSocket proxy with source available and a clean programmatic JS API for both client and server. Main risk is small community/maintainer bus-factor (19 stars, single author) and the lack of a dedicated REST control-plane (registration is via API keys/env vars or direct function calls rather than a management HTTP API), so our SvelteKit app would need to call the Node functions in-process or shell out to configure it rather than hit a REST endpoint.<sup class="cite">[47]</sup></p>
+<p><strong>Implementation-validated (4/5, confirmed with a real architectural quirk).</strong> Cloned and traced: specter does have a genuine management API — real Twirp RPCs (<code>MintDelegation</code>/<code>ListDelegations</code>/<code>RevokeDelegation</code>) — but it's exposed only on an <strong>"owner" client process</strong> (<code>--server host:port</code>), not on the gateway/tunnel server itself. Practically this means SvelteKit would need to run a persistent "owner-client" sidecar process just to call the mint/revoke API — an extra moving part none of the other tools in this survey require. The "lightweight token client" mode (<code>specter client serve --token-file</code>) is a genuine config-free, pre-shared-token pairing pattern with built-in reconnect and 30-second grant re-validation, matching the scenario's linking flow well once the sidecar is in place. See <code>implementation-plans/specter/PLAN.md</code>. <sup class="cite">[71]</sup></p>
 <h2>Workable tier (score 3) — meets client constraint, other real friction</h2>
 <p>These all satisfy the hard client constraint (no TUN/admin) and have
 open-source, self-hostable servers, but each has a real limiting factor:
@@ -939,6 +1022,8 @@ stack, or a smaller community.</p>
 <li><strong>tunelo</strong> (Rust) — Meets the hard client constraints well (no TUN, no root, single binary, cross-platform including Windows) and the relay/server is open source and self-hostable as a single binary too. However there is no programmable HTTP API or JS/TS SDK for our SvelteKit ap…<sup class="cite">[62]</sup></li>
 <li><strong>tunnelite</strong> (C# / .NET (SignalR-based)) — Improved relative to its prior ranking: a separate server process is no longer a disqualifier, and its client is a lean NativeAOT-compiled single binary, comparable to wstunnel's static-binary approach. Still the heaviest server stack of the realistic options…<sup class="cite">[4]</sup></li>
 <li><strong>Wiretap</strong> (Go) — Only viable if we invert Wiretap's own terminology: put the unprivileged, TUN-free 'wiretap serve' binary on the end-user's local machine, and accept that our hosted infrastructure runs the actual privileged WireGuard peer. This does satisfy the hard client c…<sup class="cite">[97]</sup></li>
+<li><strong>tunwg</strong> (Go) — Confirmed to genuinely avoid a TUN/TAP device (gVisor userspace netstack over plain UDP, no admin/root), and the server is a simple stateless Go binary — meets the hard client constraint cleanly. Demoted from Strong to Workable after implementation validation: only two HTTP endpoints exist (<code>/add</code>, <code>/relay</code>), one shared <code>TUNWG_AUTH</code> secret covers the whole server with no per-client tokens and no revocation mechanism at all — SvelteKit would have essentially no server-side visibility into individual clients without forking the code. See <code>implementation-plans/tunwg/PLAN.md</code>.<sup class="cite">[72]</sup></li>
+<li><strong>SirTunnel</strong> (Python (~50-line script) + Caddy (Go)) — Best-in-class client (nothing but a standard SSH client, zero install, zero privileges). Demoted from Strong to Workable after implementation validation: confirmed by reading all 5 files in the repo that it truly has zero API, zero auth beyond SSH itself, zero tokens, and zero status reporting — literally every piece of the scenario (pairing, revocation, health checks, hostname/port collision avoidance) is custom work on our side, with no way to even instantly kick an open tunnel short of SSHing in. See <code>implementation-plans/sirtunnel/PLAN.md</code>.<sup class="cite">[95]</sup></li>
 </ul>
 <h2>Ruled out (score 1-2) — hard constraint violation or major disqualifier</h2>
 <ul>
@@ -987,122 +1072,82 @@ stack, or a smaller community.</p>
 <li><strong>netmask</strong> (1/5, Python) — Disqualified primarily by its GUI-centric client design and by the complete absence of a control-plane/API (still just a roadmap item), plus a very thin commit history (5 commits) signaling an unfinished, unmaintained h…<sup class="cite">[49]</sup></li>
 <li><strong>ephemeral-hidden-service</strong> (1/5, Python) — Fails our requirements on multiple fronts: it mandates installing and running a full Tor daemon (heavy, non-trivial overhead well beyond a 'simple package-manager install'), provides no programmable server API or contro…<sup class="cite">[50]</sup></li>
 <li><strong>TunnelAPI 1.0</strong> (1/5, JavaScript/Node.js (backend, tunnel-server, tunnel-client, frontend all JS-based per repo folder structure); uses MongoDB for metadata.) — Ironically the closest technical match to our control-plane wishlist (full REST API for tunnel CRUD, JS/Node server, no TUN/root on the client) but is disqualified outright by license: the repo is proprietary, explicitl…<sup class="cite">[51]</sup><sup class="cite">[52]</sup></li>
+<li><strong>Punchmole</strong> (2/5, JavaScript (Node.js)) — Genuinely embeddable Node.js library (<code>PunchmoleServer()</code>/<code>PunchmoleClient()</code> are plain importable functions, confirmed to work in-process inside a SvelteKit adapter-node backend), which looked like the best "share our JS/TS runtime" candidate in the whole survey. Demoted sharply from 4/5 to 2/5 after implementation validation: <code>API_KEYS</code> is a closed-over array set once at server startup — there is no dynamic API to add/revoke a client or query connection status without restarting the entire server process, directly failing the scenario's token-exchange requirement. See <code>implementation-plans/punchmole/PLAN.md</code>.<sup class="cite">[47]</sup></li>
 </ul>
 <h2>Recommendation</h2>
-<p><strong>chiSSL and Pangolin are the two standout picks</strong>, both scoring 5/5 and
-both directly hitting the specific bonus criteria called out: a
-self-hostable server with source code, and a genuine, documented HTTP
-control-plane for programmatic tunnel/resource registration — exactly what
-lets a SvelteKit backend wire tunnels up to its own database without
-per-tunnel custom DNS.</p>
+<p><strong>Pangolin, chiSSL, gost, and zrok are now the four standout picks</strong>, all
+scoring 5/5 after both a documentation review and a hands-on
+implementation-validation pass (cloned source, traced against a concrete
+deployment scenario — see <code>implementation-plans/</code> for the full per-tool
+plans). All four give SvelteKit a genuine, writable, per-device
+control-plane API — the ability to register a device, mint it a token,
+bind a hostname/route, and poll live status — without hand-rolling most of
+that ourselves.</p>
 <ul>
-<li><strong>chiSSL</strong> is the cleanest fit for the API bonus specifically: a
-  published OpenAPI/Redoc spec, a real REST API covering tunnels,
-  listeners, users, and API tokens, SQLite/Postgres persistence, and a
-  single admin-free Go binary client. Its only real caveat is a small
-  community (195 stars) as a fork of the much more popular chisel — real
-  but modest bus-factor risk given it's openly maintained by a company
-  (Unblocked/NextChapterSoftware) rather than a lone hobbyist.</li>
-<li><strong>Pangolin</strong> is the more heavyweight, more actively developed option
-  (22.8k stars, continuous commits, commercial backing) with a
-  TypeScript/Next.js control plane — directly matching the "easier to wire
-  up... share code" preference for a TS/JS server, since our own SvelteKit
-  backend is also TypeScript. Its client (<code>newt</code>) explicitly implements
-  WireGuard in userspace via netstack rather than a kernel TUN device —
-  satisfying the hard client constraint despite being WireGuard-based
-  under the hood. The main open question is the exact shape of Pangolin's
-  public API surface for third-party tunnel registration (versus its own
-  internal newt-registration protocol) — worth a hands-on spike before
-  committing, since it's architecturally the most promising match to "a
-  TS/JS server API we can integrate directly."</li>
-<li><strong>wstunnel and sish</strong> (both 5/5, carried forward from the prior
-  serverless-focused pass) remain excellent choices if a runtime API/control
-  plane matters less than raw client-leanness and protocol maturity — sish
-  requires literally nothing beyond OS-bundled SSH, and wstunnel is the most
-  popular and mature WebSocket-native tunnel surveyed — but neither exposes
-  a TS/JS server API or REST control-plane, so they score below chiSSL/
-  Pangolin against this round's specific bonus criteria.</li>
-<li>Of the 4/5 tier, <strong>frp</strong> (109.5k stars, the most popular tool in the
-  entire 78-tool survey) is worth a specific mention: it has a real HTTP
-  Admin API on both <code>frps</code>/<code>frpc</code> for dashboards, config reload, and proxy
-  management, though it's Go-based rather than TS/JS and the API is more
-  operational/introspective than a first-class "register a new tunnel"
-  primitive. <strong>gost</strong> and <strong>zrok</strong> both have genuine documented REST APIs
-  (Swagger/OpenAPI for gost, Go SDK + generated REST client for zrok) worth
-  considering if a Go-based server stack is acceptable. <strong>Portal
-  (portal-tunnel)</strong> stands out for having the most actively maintained
-  codebase of the whole 4/5 tier with a real <code>/sdk/*</code> HTTP control-plane,
-  though its SIWE-signed auth flow adds integration complexity.</li>
-<li><strong>Punchmole</strong> is the only pure-JavaScript/Node.js candidate that scored
-  well (4/5) — both its client and server are directly importable JS
-  functions — but it's a small (19-star) project offering in-process
-  embedding rather than a standalone REST control-plane, so it fits better
-  if a lightweight Node-based server component is acceptable alongside the
-  primary tunnel binary, not as a drop-in replacement for chiSSL/Pangolin.</li>
+<li><strong>Pangolin</strong> has the best overall object model: a <code>site → resource →
+  target</code> graph that is close to a literal match for "register a device,
+  bind a hostname to its local port." Its TypeScript/Next.js control plane
+  is also the most naturally shareable code with a TypeScript SvelteKit
+  backend. Tradeoff: the heaviest deployment of the four (Docker Compose
+  with three containers: pangolin, gerbil, traefik; WireGuard kernel
+  capabilities on the gerbil component, though the client itself is
+  TUN-free).</li>
+<li><strong>gost</strong> is the closest single-binary rival to Pangolin's routing
+  cleanliness: its Ingress object binds a hostname directly to a
+  server-issued tunnel-ID via a documented, Swagger-specified REST API,
+  all inside one Go binary with no multi-container deployment. The one
+  open gap: a documented "list connected clients" endpoint wasn't
+  confirmed from the crawled docs (may exist in the full Swagger spec,
+  which needs a closer look before committing).</li>
+<li><strong>chiSSL</strong> is the leanest deployment with a still-real API — a single
+  Go binary, OpenAPI-documented REST surface, SQLite by default. Its one
+  real limitation is that routing is port-based only (no hostname
+  dispatch), meaning you'd still need to layer a reverse proxy in front of
+  it to get "one route = one client," and its client linking is a static
+  username:password pair rather than a token exchange.</li>
+<li><strong>zrok</strong> has the best end-to-end status/health story of anything
+  surveyed — its Agent API can health-check a share all the way through
+  to the local service, not just confirm the tunnel process is alive.
+  Tradeoff: the heaviest underlying architecture (a full OpenZiti
+  zero-trust mTLS overlay).</li>
 </ul>
-<p><strong>Bottom line:</strong> chiSSL for the leanest, most API-complete self-hosted
-option; Pangolin if the larger, more actively-developed platform with a
-TypeScript control plane is worth the added architectural surface; wstunnel
-or sish as fallbacks if the API/control-plane bonus turns out not to matter
-as much in practice as raw maturity and client simplicity.</p>
-<h2>Addendum: implementation-scenario deep dives (post-hoc validation)</h2>
-<p>The scores and writeups above were assigned from documentation review
-alone. A follow-up exercise went further: for a concrete deployment
-scenario (server as a managed VPS service, SvelteKit registering/linking
-devices via an access-token exchange, then routing requests to them and
-polling connection status), <strong>all 4 top-tier tools plus all 12 strong-tier
-tools were cloned and their actual source code/docs traced</strong> against that
-exact workflow. Full individual implementation plans live in
-<code>implementation-plans/{tool}/PLAN.md</code>; the two cross-tool comparisons are
-<code>implementation-plans/COMPARISON-SUMMARY.md</code> (the 4 finalists) and
-<code>implementation-plans/STRONG-TIER-SUMMARY.md</code> (the 12 strong-tier tools).</p>
-<p><strong>This deep dive materially changed the practical shortlist.</strong> The
-abstract scores above treat "server source available + some API/control
-plane" as roughly equivalent across tools that satisfy it, but tracing
-real source revealed a sharp split that the scores alone don't capture:</p>
-<ul>
-<li><strong>Tools with a genuine, writable, per-device control-plane API</strong> —
-  where SvelteKit can actually register a device, mint it a token, bind a
-  hostname, and poll live status without hand-rolling most of that
-  ourselves — turned out to be a small subset: <strong>Pangolin, chiSSL, gost,
-  zrok, rustunnel, Portal, and boringproxy</strong>. Of these, <strong>gost</strong>'s
-  ingress-object model (bind a hostname directly to a server-issued
-  tunnel-ID via <code>POST /config/ingresses</code>) and <strong>Pangolin</strong>'s
-  site/resource/target graph are the cleanest architectural matches to the
-  scenario; <strong>zrok</strong>'s Agent API (<code>/agent/status</code>, <code>/agent/ping</code>,
-  <code>/agent/share/http-healthcheck</code>) is the single best status/health story
-  found across all 16 tools examined this way — genuinely end-to-end,
-  not just "is the tunnel process alive."</li>
-<li><strong>Tools that scored well in the docs-only pass but turned out to
-  provide little-to-no dynamic control plane once traced in source</strong>:
-  <strong>wstunnel, sish, frp, piko, specter, tunwg, SirTunnel, and Punchmole</strong>.
-  Several of these are excellent, mature <em>transport</em> layers (frp is the
-  single most popular tool in the entire 78-tool survey; wstunnel and sish
-  remain the leanest clients) — but the actual "register a device
-  programmatically" workflow the scenario requires turned out to be 100%
-  custom SvelteKit backend code for all eight, regardless of how mature or
-  popular the underlying tunnel binary is. <strong>SirTunnel and Punchmole are
-  the starkest cases</strong>: SirTunnel is confirmed (by reading all 5 files in
-  its repo) to be a 47-line SSH-triggered Caddy-API wrapper with zero
-  auth/status/revocation of its own; Punchmole's entire authorized-client
-  list is a closed-over array set once at process startup, requiring a
-  full restart to add or revoke a device despite being a genuinely
-  embeddable Node.js library otherwise.</li>
-<li><strong>Licensing surfaced as a second axis the abstract scores didn't
-  weight</strong>: both <strong>go-http-tunnel</strong> (already flagged above) and
-  <strong>rustunnel</strong> (newly discovered in the deep dive) are <strong>AGPL-3.0</strong> —
-  real legal exposure for embedding either in a commercial SaaS backend
-  without a commercial license, independent of how good their APIs are.</li>
-</ul>
-<p><strong>Revised shortlist after this validation pass:</strong> Pangolin (best overall
-object model, heaviest deployment), gost (closest single-binary rival to
-Pangolin's routing cleanliness, Swagger-documented API), chiSSL (leanest
-deployment with a real API, but port-only routing needs an extra reverse
-proxy layer), and zrok (best end-to-end status/health story, heaviest
-underlying architecture via OpenZiti) — with rustunnel and Portal as viable
-alternates carrying real license/auth-model complications. See
-<code>implementation-plans/STRONG-TIER-SUMMARY.md</code> for the full per-tool
-breakdown behind this revision.</p>
+<p><strong>wstunnel and sish, the prior top picks from the docs-only pass, are now
+correctly understood as a tier below these four</strong> once actually traced:
+both are excellent, mature <em>transport</em> layers (sish's OS-bundled-SSH client
+is still the leanest client of any tool surveyed; wstunnel is the most
+popular and mature WebSocket-native tunnel), but neither exposes a
+control-plane API for the actual "register a device" workflow this
+scenario needs — wstunnel has zero network API of any kind, and sish's
+admin API is read/kill-only with no way to add or revoke an authorized key
+through it. Both remain viable, but choosing either means building
+essentially the same device-registry/token-issuance/routing logic that
+Pangolin/gost/chiSSL/zrok already ship.</p>
+<p><strong>Other real contenders from the Strong Tier</strong>, all confirmed via
+implementation trace to have a genuine (if imperfect) control-plane API:
+<strong>frp</strong> (the single most popular tool in the entire 78-tool survey — real
+admin API, but read-only; registration needs a custom Login-plugin
+callback), <strong>piko</strong> (clean JWT-based linking and Host-header routing, but
+no clean per-device revoke), <strong>boringproxy</strong> (real REST API, server
+self-issues SSH keys — a genuinely strong option), <strong>rustunnel</strong> (real
+REST/OpenAPI control-plane, but AGPL-3.0 licensing is a real legal
+consideration), <strong>Portal</strong> (real <code>/sdk/*</code> API, but its SIWE/crypto-signed
+auth model is unusually complex to integrate), <strong>gt</strong> and <strong>specter</strong>
+(both have real but indirect control-plane primitives — an <code>authAPI</code>
+callback for gt, an owner-client-sidecar Twirp API for specter).</p>
+<p><strong>tunwg, SirTunnel, and Punchmole were all demoted after implementation
+validation</strong> — each looked promising in the docs-only pass but, once
+traced, turned out to have little-to-no dynamic control plane: tunwg has
+only two endpoints and one shared secret with no revocation; SirTunnel
+(confirmed by reading its entire ~50-line codebase) has zero API of any
+kind; and Punchmole's authorized-client list is fixed at server startup,
+requiring a full restart to change despite being a genuinely embeddable
+Node.js library otherwise.</p>
+<p><strong>Bottom line:</strong> Pangolin, gost, chiSSL, or zrok for a real production
+build — pick based on whether TypeScript-native control plane (Pangolin),
+single-binary simplicity (gost/chiSSL), or best-in-class health monitoring
+(zrok) matters most. wstunnel or sish remain reasonable fallbacks only if
+client-leanness and transport maturity are weighted above having a
+built-in control-plane API.</p>
 <h2>Sources</h2>
 <p><sup class="cite">[1]</sup> <a href="https://github.com/erebe/wstunnel">https://github.com/erebe/wstunnel</a>
 <sup class="cite">[2]</sup> <a href="https://github.com/azimjohn/jprq">https://github.com/azimjohn/jprq</a>
