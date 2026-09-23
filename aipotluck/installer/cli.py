@@ -17,6 +17,8 @@ Usage:
     aipotluck-local-client login    # prompts for tunnel id/secret/endpoint, one at a time
     aipotluck-local-client logout   # unpairs; llama-server and the tunnel stop until you log in again
     aipotluck-local-client status   # asks the running service for its login/tunnel/llama-server state
+    aipotluck-local-client pull <hf-repo[:quant]>   # download + activate a model ahead of time
+    aipotluck-local-client list     # list models already downloaded locally
 """
 
 from __future__ import annotations
@@ -36,6 +38,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from aipotluck.installer import layout, newt_fetch  # noqa: E402
 from aipotluck.installer.cli_shim import CLI_SHIM_NAME  # noqa: E402
+from aipotluck.installer.model_pull import (  # noqa: E402
+    DEFAULT_TIMEOUT_SECONDS,
+    ModelPullError,
+    list_cached_models,
+    pull_model,
+)
 from aipotluck.installer.platform_detect import HostProfile, detect_host_profile  # noqa: E402
 from aipotluck.installer.service.base import get_service_manager  # noqa: E402
 from aipotluck.service.runner import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
@@ -92,6 +100,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Unpair this device; llama-server and the tunnel stop until you log in again",
     )
     sub.add_parser("status", parents=[common], help="Query the running service's login/tunnel/llama-server state")
+
+    pull = sub.add_parser(
+        "pull", parents=[common],
+        help="Download a Hugging Face model ahead of time and make it the active model",
+    )
+    pull.add_argument(
+        "model",
+        help="Hugging Face repo[:quant], e.g. bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M "
+             "-- passed straight through to llama-server's own -hf downloader",
+    )
+    pull.add_argument(
+        "--timeout", type=float, default=None,
+        help=f"Seconds to wait for the download+load to finish before giving up "
+             f"(default: {int(DEFAULT_TIMEOUT_SECONDS)})",
+    )
+
+    sub.add_parser(
+        "list", parents=[common],
+        help="List models already downloaded locally (via llama-server's own --cache-list)",
+    )
 
     return parser
 
@@ -252,6 +280,75 @@ def run_status(_args: argparse.Namespace) -> int:
     return 0
 
 
+def run_pull_model(args: argparse.Namespace) -> int:
+    """Downloads `args.model` via llama-server's own -hf downloader (see model_pull.py), then
+    makes it the configured model for this device -- same "edit runtime.json, restart the
+    already-installed service" shape as login/logout, so a running service picks it up without a
+    separate step. Independent of login state: pulling a model doesn't need (or touch) pairing."""
+    profile, lay = _profile_and_layout(args)
+    runtime_path = _runtime_path(lay)
+    runtime_config = _load_runtime(runtime_path)
+
+    llama_cfg = runtime_config.get("llama_cpp")
+    if not llama_cfg or not llama_cfg.get("server_binary"):
+        log.error("No llama.cpp install found at %s -- run the installer first.", runtime_path)
+        return 1
+
+    print(f"Pulling {args.model} -- this can take a while for a large quant.")
+    try:
+        pull_model(
+            Path(llama_cfg["server_binary"]),
+            args.model,
+            ctx_size=llama_cfg.get("ctx_size"),
+            gpu_layers=llama_cfg.get("gpu_layers"),
+            timeout=args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_SECONDS,
+        )
+    except ModelPullError as exc:
+        log.error("%s", exc)
+        return 1
+
+    llama_cfg["model_hf"] = args.model
+    llama_cfg["model_path"] = None
+    _save_runtime(runtime_path, runtime_config)
+    log.info("Set %s as the active model in %s", args.model, runtime_path)
+
+    _restart_service(profile.os_name, args.system)
+    print()
+    print(f"{args.model} is downloaded and set as the active model.")
+    return 0
+
+
+def run_list_models(args: argparse.Namespace) -> int:
+    """Lists every model already cached locally (see model_pull.list_cached_models). Doesn't need
+    the device logged in or the service running -- this only reads the local HF-hub-compatible
+    cache directory via llama-server's own --cache-list, independent of pairing/service state."""
+    _profile, lay = _profile_and_layout(args)
+    runtime_path = _runtime_path(lay)
+    runtime_config = _load_runtime(runtime_path)
+
+    llama_cfg = runtime_config.get("llama_cpp")
+    if not llama_cfg or not llama_cfg.get("server_binary"):
+        log.error("No llama.cpp install found at %s -- run the installer first.", runtime_path)
+        return 1
+
+    try:
+        models = list_cached_models(Path(llama_cfg["server_binary"]))
+    except ModelPullError as exc:
+        log.error("%s", exc)
+        return 1
+
+    if not models:
+        print("No models cached locally yet -- pull one with `aipotluck-local-client pull <repo[:quant]>`.")
+        return 0
+
+    active = llama_cfg.get("model_hf")
+    print(f"{len(models)} model(s) cached locally:")
+    for target in models:
+        marker = "  (active)" if target == active else ""
+        print(f"  {target}{marker}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -263,6 +360,10 @@ def main(argv: list[str] | None = None) -> int:
             return run_logout(args)
         if args.command == "status":
             return run_status(args)
+        if args.command == "pull":
+            return run_pull_model(args)
+        if args.command == "list":
+            return run_list_models(args)
     except SystemExit:
         raise
     except Exception as exc:  # top-level guard: always report clearly

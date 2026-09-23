@@ -84,3 +84,44 @@ class TestLoginTunnelFlags:
             parser.parse_args(["logout", "--tunnel-id", "abc"])
         with pytest.raises(SystemExit):
             parser.parse_args(["status", "--tunnel-id", "abc"])
+
+
+class TestPullArgs:
+    def test_model_is_required(self):
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["pull"])
+
+    def test_model_and_default_timeout(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["pull", "bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"])
+        assert args.model == "bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"
+        assert args.timeout is None  # run_pull_model fills in the real default
+
+    def test_custom_timeout(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["pull", "org/repo", "--timeout", "120"])
+        assert args.timeout == 120.0
+
+    def test_install_dir_after_the_model_and_subcommand(self):
+        # Same placement rule as every other subcommand -- see TestInstallDirPlacement above.
+        parser = build_arg_parser()
+        args = parser.parse_args(["pull", "org/repo", "--install-dir", "/tmp/x"])
+        assert args.install_dir == Path("/tmp/x")
+
+    def test_install_dir_before_subcommand_is_rejected(self):
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--install-dir", "/tmp/x", "pull", "org/repo"])
+
+
+class TestListArgs:
+    def test_no_positional_arguments_needed(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["list"])
+        assert args.command == "list"
+
+    def test_install_dir_after_subcommand(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["list", "--install-dir", "/tmp/x"])
+        assert args.install_dir == Path("/tmp/x")

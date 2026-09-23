@@ -277,3 +277,170 @@ class TestRunStatus:
 
         out = capsys.readouterr().out
         assert "not running (supervisor not started)" in out
+
+
+def make_pull_args(install_dir: Path, model: str = "org/repo:Q4_K_M", timeout=None, **overrides) -> Namespace:
+    defaults = dict(install_dir=install_dir, system=False, verbose=False, model=model, timeout=timeout)
+    defaults.update(overrides)
+    return Namespace(**defaults)
+
+
+class TestRunPullModel:
+    def test_success_activates_the_pulled_model_and_restarts_the_service(
+        self, tmp_path, fake_service_manager, monkeypatch
+    ):
+        install_dir = tmp_path / "install"
+        runtime_path = write_runtime(
+            install_dir,
+            {
+                "llama_cpp": {"server_binary": "/fake/llama-server", "model_hf": "old/model", "model_path": None},
+                "service": {},
+                "logged_in": True,
+            },
+        )
+        pull_calls = []
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: pull_calls.append((a, kw)))
+        args = make_pull_args(install_dir, model="new/model:Q8_0")
+
+        rc = cli.run_pull_model(args)
+
+        assert rc == 0
+        assert len(pull_calls) == 1
+        saved = json.loads(runtime_path.read_text())
+        assert saved["llama_cpp"]["model_hf"] == "new/model:Q8_0"
+        assert saved["llama_cpp"]["model_path"] is None
+        fake_service_manager.stop.assert_called_once()
+        fake_service_manager.start.assert_called_once()
+
+    def test_missing_llama_cpp_install_is_rejected_before_pulling(self, tmp_path, fake_service_manager, monkeypatch):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"service": {}, "logged_in": False})  # no llama_cpp section at all
+        pull_calls = []
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: pull_calls.append((a, kw)))
+        args = make_pull_args(install_dir)
+
+        rc = cli.run_pull_model(args)
+
+        assert rc == 1
+        assert pull_calls == []
+        fake_service_manager.stop.assert_not_called()
+
+    def test_pull_failure_does_not_change_runtime_json(self, tmp_path, fake_service_manager, monkeypatch):
+        install_dir = tmp_path / "install"
+        runtime_path = write_runtime(
+            install_dir,
+            {"llama_cpp": {"server_binary": "/fake/llama-server", "model_hf": "old/model"}, "service": {}},
+        )
+        original = runtime_path.read_text()
+
+        def raise_pull_error(*a, **kw):
+            raise cli.ModelPullError("bad repo/quant")
+
+        monkeypatch.setattr(cli, "pull_model", raise_pull_error)
+        args = make_pull_args(install_dir, model="bad/repo")
+
+        rc = cli.run_pull_model(args)
+
+        assert rc == 1
+        assert runtime_path.read_text() == original  # unchanged -- a failed pull activates nothing
+        fake_service_manager.stop.assert_not_called()
+
+    def test_default_timeout_used_when_not_given(self, tmp_path, fake_service_manager, monkeypatch):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
+        seen_kwargs = {}
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: seen_kwargs.update(kw))
+        args = make_pull_args(install_dir, timeout=None)
+
+        cli.run_pull_model(args)
+
+        assert seen_kwargs["timeout"] == cli.DEFAULT_TIMEOUT_SECONDS
+
+    def test_custom_timeout_passed_through(self, tmp_path, fake_service_manager, monkeypatch):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
+        seen_kwargs = {}
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: seen_kwargs.update(kw))
+        args = make_pull_args(install_dir, timeout=45.0)
+
+        cli.run_pull_model(args)
+
+        assert seen_kwargs["timeout"] == 45.0
+
+    def test_ctx_size_and_gpu_layers_forwarded_from_existing_config(self, tmp_path, fake_service_manager, monkeypatch):
+        install_dir = tmp_path / "install"
+        write_runtime(
+            install_dir,
+            {
+                "llama_cpp": {"server_binary": "/fake/llama-server", "ctx_size": 8192, "gpu_layers": "all"},
+                "service": {},
+            },
+        )
+        seen_kwargs = {}
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: seen_kwargs.update(kw))
+        args = make_pull_args(install_dir)
+
+        cli.run_pull_model(args)
+
+        assert seen_kwargs["ctx_size"] == 8192
+        assert seen_kwargs["gpu_layers"] == "all"
+
+
+class TestRunListModels:
+    def test_lists_cached_models_and_marks_the_active_one(self, tmp_path, monkeypatch, capsys):
+        install_dir = tmp_path / "install"
+        write_runtime(
+            install_dir,
+            {"llama_cpp": {"server_binary": "/fake/llama-server", "model_hf": "org/repo:Q4_K_M"}, "service": {}},
+        )
+        monkeypatch.setattr(cli, "list_cached_models", lambda binary: ["org/repo:Q4_K_M", "org/other:Q8_0"])
+        args = make_pull_args(install_dir)
+
+        rc = cli.run_list_models(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "2 model(s) cached locally" in out
+        assert "org/repo:Q4_K_M  (active)" in out
+        assert "org/other:Q8_0" in out
+        assert "org/other:Q8_0  (active)" not in out
+
+    def test_no_cached_models_suggests_pull(self, tmp_path, monkeypatch, capsys):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
+        monkeypatch.setattr(cli, "list_cached_models", lambda binary: [])
+        args = make_pull_args(install_dir)
+
+        rc = cli.run_list_models(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "aipotluck-local-client pull" in out
+
+    def test_missing_llama_cpp_install_is_rejected(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"service": {}})  # no llama_cpp section
+        calls = []
+        monkeypatch.setattr(cli, "list_cached_models", lambda binary: calls.append(binary))
+        args = make_pull_args(install_dir)
+
+        rc = cli.run_list_models(args)
+
+        assert rc == 1
+        assert calls == []
+
+    def test_list_error_is_surfaced_and_returns_1(self, tmp_path, monkeypatch, caplog):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
+
+        def raise_error(binary):
+            raise cli.ModelPullError("--cache-list not supported by this build")
+
+        monkeypatch.setattr(cli, "list_cached_models", raise_error)
+        args = make_pull_args(install_dir)
+
+        with caplog.at_level(logging.ERROR, logger="aipotluck.cli"):
+            rc = cli.run_list_models(args)
+
+        assert rc == 1
+        assert any("not supported" in rec.message for rec in caplog.records)

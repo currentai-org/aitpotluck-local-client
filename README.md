@@ -171,6 +171,34 @@ on PATH yet (a fresh shell hasn't picked it up, or this was a `--no-service`
 install, which skips the shim) fall back to
 `python3 -m aipotluck.installer.cli login` from this checkout.
 
+## Models: pull / list
+
+Neither the installer nor the service ever downloads model weights on their own -- the installer
+only fetches the llama.cpp *binaries*, and `llama-server` itself lazily downloads whatever
+`-hf`/`--model` it's configured with the first time it actually starts. `pull` and `list` (in
+`aipotluck/installer/model_pull.py`) exist to trigger and inspect that ahead of time:
+
+```bash
+aipotluck-local-client pull bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M   # download + activate
+aipotluck-local-client list                                              # what's cached locally
+```
+
+`pull` accepts any Hugging Face `repo` or `repo:quant` target -- the exact same shorthand
+`--model-hf` already takes -- and hands it straight to `llama-server`'s own `-hf` downloader
+rather than re-implementing Hugging Face's GGUF-resolution logic (matching a quant string to the
+right file, split-GGUF handling, etc). It blocks until the model has actually finished
+downloading *and* loading successfully (a real `/health` check on a throwaway port, not just "the
+download finished"), then sets it as `runtime.json`'s active model and restarts the
+already-installed service, the same "edit config, restart the service" shape `login`/`logout`
+use. Independent of login state -- pulling a model doesn't need pairing.
+
+`list` reads the same on-disk cache `-hf` writes into and `pull` reads from -- a real Hugging
+Face Hub cache layout (`$LLAMA_CACHE` / `$HF_HUB_CACHE` / `$HUGGINGFACE_HUB_CACHE` /
+`$HF_HOME/hub` / `$XDG_CACHE_HOME/huggingface/hub` / `~/.cache/huggingface/hub`, in that order --
+see `vendor/llama.cpp/common/hf-cache.cpp`) -- via `llama-server`'s own `--cache-list` flag, for
+the same "don't re-implement it" reason `pull` reuses `-hf`. The currently active model (whatever
+`runtime.json`'s `llama_cpp.model_hf` is set to) is marked `(active)`.
+
 ## CLI on PATH
 
 `aipotluck-local-client` (`aipotluck/installer/cli_shim.py`) is written
@@ -205,14 +233,18 @@ pip install -e ".[dev]"    # or: pip install --user pytest
 pytest
 ```
 
-Unit tests only -- no real network, no real systemd/launchd, no real subprocess. Every OS/network/
-service-manager boundary (`fetch`/`newt_fetch`, `get_service_manager`, `LlamaSupervisor`/
-`NewtSupervisor`, `urllib.request.urlopen`) is mocked or swapped for a lightweight fake; only real
-filesystem writes happen, always rooted under pytest's own `tmp_path` -- the suite never touches
-the actual per-OS install locations (`~/.local/bin`, `~/.config/aipotluck`, a real systemd unit,
-etc.). Covers `platform_detect.py`, `layout.py`, `cli.py` (including the argparse regression --
-see `test_cli_argparse.py`'s docstring), `cli_shim.py`, `install.py`'s `--no-service` and real
-install paths, and `service/runner.py`'s login-gating and `/status` secret redaction.
+No real network and no real systemd/launchd. Every OS/network/service-manager boundary
+(`fetch`/`newt_fetch`, `get_service_manager`, `LlamaSupervisor`/`NewtSupervisor`,
+`urllib.request.urlopen`) is mocked or swapped for a lightweight fake; only real filesystem
+writes happen, always rooted under pytest's own `tmp_path` -- the suite never touches the actual
+per-OS install locations (`~/.local/bin`, `~/.config/aipotluck`, a real systemd unit, etc.). One
+deliberate exception: `test_model_pull.py` runs a real subprocess (a tiny stand-in script playing
+the part of `llama-server`) and polls a real socket -- spawn/health-poll/terminate orchestration
+is exactly the kind of thing a mock can make *look* correct while testing nothing, so that one
+module is exercised for real instead. Covers `platform_detect.py`, `layout.py`, `cli.py`
+(including the argparse regression -- see `test_cli_argparse.py`'s docstring), `cli_shim.py`,
+`model_pull.py`'s `pull`/`list` orchestration, `install.py`'s `--no-service` and real install
+paths, and `service/runner.py`'s login-gating and `/status` secret redaction.
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
