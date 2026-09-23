@@ -12,8 +12,10 @@ Flow:
        ever published upstream, and even the linux-arm64-cpu asset needs a newer glibc than
        JetPack ships. See build_strategy.py's module docstring for the confirmed evidence.
     3a. Prebuilt path: download (cached, checksum-verified) + extract it.
-    3b. Source-build path: check the host actually has what a build needs (never silently `sudo
-        apt-get install`), then configure + build llama-server from vendor/llama.cpp
+    3b. Source-build path: check the host actually has what a build needs; for the apt-fixable
+        gaps (cmake/git/compiler/OpenSSL headers -- never the CUDA toolkit), offer to install them
+        via sudo with explicit consent (--allow-apt-install, or an interactive y/N prompt -- never
+        unconditionally), then configure + build llama-server from vendor/llama.cpp
         (source_build.py).
     4. Write runtime.json pointing at the resolved llama-server binary.
     5. Install our blank Python service via the OS-native service manager.
@@ -117,9 +119,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=f"Wall-clock ceiling in seconds for a from-source build (default: "
              f"{source_build.DEFAULT_BUILD_TIMEOUT_SECONDS:.0f})",
     )
+    apt_install_group = parser.add_mutually_exclusive_group()
+    apt_install_group.add_argument(
+        "--allow-apt-install", action="store_true",
+        help="Consent up front to installing missing from-source-build dependencies (cmake, git, "
+             "a C++ compiler, OpenSSL headers) via 'sudo apt-get install' -- skips the interactive "
+             "y/N prompt. sudo still prompts for a password on its own terminal as usual; this "
+             "installer never supplies one. The CUDA toolkit (nvcc) is never auto-installed "
+             "regardless of this flag -- see source_build.missing_apt_packages' docstring.",
+    )
+    apt_install_group.add_argument(
+        "--no-apt-install", action="store_true",
+        help="Never offer to auto-install build dependencies, even interactively -- always just "
+             "print the missing packages and the exact apt command, and stop.",
+    )
 
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
+
+
+def _confirm_apt_install(packages: list[str]) -> bool:
+    """Interactive y/N consent to auto-installing `packages` via sudo. Never prompts (comes back
+    False) without a real controlling terminal on stdin -- a piped install (e.g. the public
+    `curl ... | bash` one-liner) has no stdin a person could answer through, so the safe default
+    there is "don't act without --allow-apt-install", not a prompt nobody can see or answer."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        answer = input(
+            f"Install missing build dependencies now via sudo apt-get ({', '.join(packages)})? [y/N]: "
+        ).strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
 
 
 def setup_logging(verbose: bool) -> None:
@@ -163,6 +195,18 @@ def run_install(args: argparse.Namespace) -> int:
             return 1
 
         problems = source_build.check_build_prerequisites(want_cuda=strategy.cuda_arch is not None)
+        if problems:
+            apt_packages = source_build.missing_apt_packages() if not args.no_apt_install else []
+            if apt_packages and source_build.has_apt() and (
+                args.allow_apt_install or _confirm_apt_install(apt_packages)
+            ):
+                try:
+                    source_build.install_apt_packages(apt_packages)
+                except source_build.AptInstallError as exc:
+                    log.error("Installing dependencies failed: %s", exc)
+                    return 1
+                problems = source_build.check_build_prerequisites(want_cuda=strategy.cuda_arch is not None)
+
         if problems:
             log.error("Can't build llama-server from source -- missing prerequisites:")
             for problem in problems:

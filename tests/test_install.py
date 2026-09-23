@@ -217,6 +217,148 @@ class TestRunInstallSourceBuild:
         assert kwargs["timeout"] == 120.0
 
 
+class TestConfirmAptInstall:
+    def test_no_tty_never_prompts_and_declines(self, monkeypatch):
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: False)
+        assert install._confirm_apt_install(["cmake"]) is False
+
+    def test_tty_yes_confirms(self, monkeypatch):
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        assert install._confirm_apt_install(["cmake"]) is True
+
+    def test_tty_blank_declines(self, monkeypatch):
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "")
+        assert install._confirm_apt_install(["cmake"]) is False
+
+    def test_eof_declines_rather_than_crashing(self, monkeypatch):
+        monkeypatch.setattr(install.sys.stdin, "isatty", lambda: True)
+
+        def _raise(prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise)
+        assert install._confirm_apt_install(["cmake"]) is False
+
+
+class TestRunInstallAptInstallConsent:
+    def _missing_prereqs(self, monkeypatch, *, packages, resolved_by_install=True):
+        """Simulates check_build_prerequisites reporting `packages` missing on its first call --
+        as if install_apt_packages (mocked separately per test) had actually fixed them, a second
+        call comes back clean when `resolved_by_install` is True, or still missing when it's not
+        (e.g. the "apt install itself failed" test, where nothing was ever really fixed)."""
+        calls = {"n": 0}
+
+        def _check(want_cuda):
+            calls["n"] += 1
+            if calls["n"] == 1 or not resolved_by_install:
+                return [f"{p} not found (sudo apt-get install -y {p})" for p in packages]
+            return []
+
+        monkeypatch.setattr(install.source_build, "check_build_prerequisites", _check)
+        monkeypatch.setattr(install.source_build, "missing_apt_packages", lambda: list(packages))
+        monkeypatch.setattr(install.source_build, "has_apt", lambda: True)
+
+    def test_allow_apt_install_flag_installs_without_prompting(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        self._missing_prereqs(monkeypatch, packages=["cmake"])
+        install_apt = MagicMock()
+        monkeypatch.setattr(install.source_build, "install_apt_packages", install_apt)
+        confirm = MagicMock()
+        monkeypatch.setattr(install, "_confirm_apt_install", confirm)
+        args = make_args(tmp_path / "install", ["--no-service", "--allow-apt-install"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        install_apt.assert_called_once_with(["cmake"])
+        confirm.assert_not_called()  # explicit consent up front skips the interactive prompt entirely
+        ensure_built.assert_called_once()
+
+    def test_no_apt_install_flag_never_offers_even_interactively(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        self._missing_prereqs(monkeypatch, packages=["cmake"])
+        install_apt = MagicMock()
+        monkeypatch.setattr(install.source_build, "install_apt_packages", install_apt)
+        confirm = MagicMock(return_value=True)
+        monkeypatch.setattr(install, "_confirm_apt_install", confirm)
+        args = make_args(tmp_path / "install", ["--no-service", "--no-apt-install"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        install_apt.assert_not_called()
+        confirm.assert_not_called()
+        ensure_built.assert_not_called()
+
+    def test_default_prompts_interactively_and_proceeds_on_yes(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        self._missing_prereqs(monkeypatch, packages=["cmake", "libssl-dev"])
+        install_apt = MagicMock()
+        monkeypatch.setattr(install.source_build, "install_apt_packages", install_apt)
+        monkeypatch.setattr(install, "_confirm_apt_install", lambda packages: True)
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        install_apt.assert_called_once_with(["cmake", "libssl-dev"])
+        ensure_built.assert_called_once()
+
+    def test_default_declines_on_no_and_refuses_to_build(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        self._missing_prereqs(monkeypatch, packages=["cmake"])
+        install_apt = MagicMock()
+        monkeypatch.setattr(install.source_build, "install_apt_packages", install_apt)
+        monkeypatch.setattr(install, "_confirm_apt_install", lambda packages: False)
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        install_apt.assert_not_called()
+        ensure_built.assert_not_called()
+
+    def test_apt_install_failure_is_reported_and_never_builds_anyway(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        self._missing_prereqs(monkeypatch, packages=["cmake"], resolved_by_install=False)
+        monkeypatch.setattr(
+            install.source_build, "install_apt_packages",
+            MagicMock(side_effect=install.source_build.AptInstallError("wrong password")),
+        )
+        args = make_args(tmp_path / "install", ["--no-service", "--allow-apt-install"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        ensure_built.assert_not_called()
+
+    def test_nvcc_gap_is_never_apt_installable_even_with_consent(self, tmp_path, fake_source_build, monkeypatch):
+        # missing_apt_packages() never includes nvcc (see its docstring) -- so even full consent
+        # can't paper over a real nvcc gap; the CUDA toolkit is never something this auto-installs.
+        monkeypatch.setattr(
+            install.source_build, "check_build_prerequisites",
+            lambda want_cuda: ["nvcc not found -- ..."],
+        )
+        monkeypatch.setattr(install.source_build, "missing_apt_packages", lambda: [])
+        install_apt = MagicMock()
+        monkeypatch.setattr(install.source_build, "install_apt_packages", install_apt)
+        _, ensure_built = fake_source_build
+        args = make_args(tmp_path / "install", ["--no-service", "--allow-apt-install"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        install_apt.assert_not_called()
+        ensure_built.assert_not_called()
+
+    def test_allow_and_no_apt_install_are_mutually_exclusive(self):
+        parser = install.build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--allow-apt-install", "--no-apt-install"])
+
+
 class TestRunInstallWithService:
     def _fake_service_manager(self, monkeypatch):
         mgr = MagicMock()
