@@ -37,7 +37,11 @@ def fake_fetch(monkeypatch, tmp_path):
 
     monkeypatch.setattr(install.fetch, "load_version_manifest", lambda path: {"tag": "b10989"})
     monkeypatch.setattr(
-        install.fetch, "resolve_asset", lambda manifest, profile: ("linux-x64-cpu", {"file": "llama-x.tar.gz"})
+        install.build_strategy,
+        "resolve_install_strategy",
+        lambda profile, manifest: install.build_strategy.InstallStrategy(
+            use_source_build=False, reason="test", asset_key="linux-x64-cpu", asset_entry={"file": "llama-x.tar.gz"}
+        ),
     )
     monkeypatch.setattr(install.fetch, "download_asset", lambda manifest, entry, dest_dir: tmp_path / "archive.tar.gz")
     monkeypatch.setattr(
@@ -45,6 +49,31 @@ def fake_fetch(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(install.fetch, "find_binary", lambda extract_dir, stem: server_binary)
     return server_binary
+
+
+@pytest.fixture
+def fake_source_build(tmp_path, monkeypatch):
+    """Stubs the strategy resolver to force the source-build path, plus the build itself -- these
+    tests pin run_install's CONTRACT around that path (what it refuses without asking, what it
+    passes through to source_build.ensure_llama_server_built), not source_build.py's own behavior
+    (that's test_source_build.py's job)."""
+    server_binary = tmp_path / "built" / "bin" / "llama-server"
+    server_binary.parent.mkdir(parents=True, exist_ok=True)
+    server_binary.write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(install.fetch, "load_version_manifest", lambda path: {"tag": "b10989"})
+    monkeypatch.setattr(
+        install.build_strategy,
+        "resolve_install_strategy",
+        lambda profile, manifest: install.build_strategy.InstallStrategy(
+            use_source_build=True, reason="no published asset", cuda_arch="87"
+        ),
+    )
+    monkeypatch.setattr(install.source_build, "check_build_prerequisites", lambda want_cuda: [])
+    monkeypatch.setattr(install.source_build, "check_free_disk_gb", lambda path: 20.0)
+    ensure_built = MagicMock(return_value=server_binary)
+    monkeypatch.setattr(install.source_build, "ensure_llama_server_built", ensure_built)
+    return server_binary, ensure_built
 
 
 def make_args(install_dir: Path, extra_argv: list[str] | None = None):
@@ -106,6 +135,86 @@ class TestRunInstallNoService:
         assert "not installed (--no-service)" in out
         assert "python3 -m aipotluck.installer.cli login" in out
         assert "CLI:" not in out
+
+
+class TestRunInstallSourceBuild:
+    def test_builds_from_source_and_records_it_in_runtime_config(self, tmp_path, fake_source_build):
+        server_binary, ensure_built = fake_source_build
+        install_dir = tmp_path / "install"
+        args = make_args(install_dir, ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        ensure_built.assert_called_once()
+        _, kwargs = ensure_built.call_args
+        assert kwargs["cuda_arch"] == "87"
+        saved = json.loads((install_dir / "config" / "runtime.json").read_text())
+        assert saved["llama_cpp"]["server_binary"] == str(server_binary)
+        assert saved["llama_cpp"]["built_from_source"] is True
+
+    def test_no_source_build_flag_refuses_instead_of_building(self, tmp_path, fake_source_build):
+        _, ensure_built = fake_source_build
+        args = make_args(tmp_path / "install", ["--no-service", "--no-source-build"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        ensure_built.assert_not_called()
+
+    def test_missing_prerequisites_refuses_before_building(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        monkeypatch.setattr(
+            install.source_build, "check_build_prerequisites",
+            lambda want_cuda: ["cmake not found (sudo apt-get install -y cmake)"],
+        )
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        ensure_built.assert_not_called()
+
+    def test_insufficient_disk_refuses_before_building(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        monkeypatch.setattr(install.source_build, "check_free_disk_gb", lambda path: 1.0)
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        ensure_built.assert_not_called()
+
+    def test_cuda_backend_with_undetectable_arch_refuses_rather_than_guessing(
+        self, tmp_path, fake_source_build, monkeypatch
+    ):
+        _, ensure_built = fake_source_build
+        monkeypatch.setattr(
+            install, "detect_host_profile",
+            lambda backend: HostProfile(os_name="linux", arch="arm64", backend="cuda"),
+        )
+        monkeypatch.setattr(
+            install.build_strategy, "resolve_install_strategy",
+            lambda profile, manifest: install.build_strategy.InstallStrategy(
+                use_source_build=True, reason="no published asset", cuda_arch=None
+            ),
+        )
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 1
+        ensure_built.assert_not_called()
+
+    def test_jobs_and_timeout_flags_pass_through(self, tmp_path, fake_source_build):
+        _, ensure_built = fake_source_build
+        args = make_args(tmp_path / "install", ["--no-service", "--jobs", "3", "--build-timeout", "120"])
+
+        install.run_install(args)
+
+        _, kwargs = ensure_built.call_args
+        assert kwargs["jobs"] == 3
+        assert kwargs["timeout"] == 120.0
 
 
 class TestRunInstallWithService:

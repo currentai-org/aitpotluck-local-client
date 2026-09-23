@@ -6,8 +6,15 @@ Usage:
 
 Flow:
     1. Detect platform/arch/GPU-backend.
-    2. Resolve the pinned llama.cpp release asset from llama_version.json.
-    3. Download (cached, checksum-verified) + extract it.
+    2. Decide whether a prebuilt llama.cpp release asset is actually viable for this host, or
+       whether it needs to be built from source instead (build_strategy.py) -- e.g. every
+       Jetson-class arm64+CUDA board: nvidia-smi is real there, but no linux-arm64-cuda asset is
+       ever published upstream, and even the linux-arm64-cpu asset needs a newer glibc than
+       JetPack ships. See build_strategy.py's module docstring for the confirmed evidence.
+    3a. Prebuilt path: download (cached, checksum-verified) + extract it.
+    3b. Source-build path: check the host actually has what a build needs (never silently `sudo
+        apt-get install`), then configure + build llama-server from vendor/llama.cpp
+        (source_build.py).
     4. Write runtime.json pointing at the resolved llama-server binary.
     5. Install our blank Python service via the OS-native service manager.
     6. Install the `aipotluck-local-client` CLI shim onto PATH (see install_cli_shim below).
@@ -25,7 +32,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from aipotluck.installer import fetch, layout
+from aipotluck.installer import build_strategy, fetch, layout, source_build
 from aipotluck.installer.platform_detect import HostProfile, detect_host_profile
 from aipotluck.installer.python_bootstrap import PythonNotFoundError, ensure_python
 from aipotluck.installer.service.base import ServiceState, get_service_manager
@@ -93,6 +100,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-host", default=DEFAULT_SERVER_HOST, help="llama-server bind host")
     parser.add_argument("--server-port", type=int, default=DEFAULT_SERVER_PORT, help="llama-server bind port")
 
+    parser.add_argument(
+        "--no-source-build", action="store_true",
+        help="Fail instead of building llama-server from source when no prebuilt release asset is "
+             "viable for this host (e.g. Jetson-class arm64+CUDA boards, or an old-glibc Linux host) "
+             "-- useful in CI/dry-run contexts that want to know about the gap rather than sit "
+             "through a build that can take well over an hour",
+    )
+    parser.add_argument(
+        "--jobs", type=int, default=None,
+        help="Parallel build jobs for a from-source build (default: auto, capped by available RAM "
+             "-- a naive -j$(nproc) can OOM a low-memory board like a Jetson Orin Nano)",
+    )
+    parser.add_argument(
+        "--build-timeout", type=float, default=source_build.DEFAULT_BUILD_TIMEOUT_SECONDS,
+        help=f"Wall-clock ceiling in seconds for a from-source build (default: "
+             f"{source_build.DEFAULT_BUILD_TIMEOUT_SECONDS:.0f})",
+    )
+
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -120,19 +145,66 @@ def run_install(args: argparse.Namespace) -> int:
         manifest["tag"] = args.tag
         log.info("Overriding pinned tag -> %s", args.tag)
 
-    asset_key, asset_entry = fetch.resolve_asset(manifest, profile)
-    log.info("Resolved asset: %s (%s)", asset_key, asset_entry["file"])
+    strategy = build_strategy.resolve_install_strategy(profile, manifest)
+    if strategy.use_source_build:
+        log.info("No viable prebuilt asset for this host (%s) -- building llama-server from source", strategy.reason)
+        if args.no_source_build:
+            log.error(
+                "--no-source-build set; refusing to build (%s). Drop that flag to let the "
+                "installer build llama-server from source instead.", strategy.reason,
+            )
+            return 1
+        if profile.backend == "cuda" and strategy.cuda_arch is None:
+            log.error(
+                "CUDA backend requested/detected but the GPU's compute capability could not be "
+                "determined (checked `nvidia-smi --query-gpu=compute_cap`) -- can't safely pick a "
+                "CMAKE_CUDA_ARCHITECTURES value. Check nvidia-smi works, or pass --backend cpu."
+            )
+            return 1
 
-    archive_path = fetch.download_asset(manifest, asset_entry, lay.state_dir / "downloads")
-    llama_dir = fetch.extract_archive(archive_path, lay.install_root / "llama.cpp", manifest["tag"], asset_key)
+        problems = source_build.check_build_prerequisites(want_cuda=strategy.cuda_arch is not None)
+        if problems:
+            log.error("Can't build llama-server from source -- missing prerequisites:")
+            for problem in problems:
+                log.error("  - %s", problem)
+            log.error("Install the above, then re-run this installer.")
+            return 1
 
-    server_bin = fetch.find_binary(llama_dir, "llama-server")
+        free_gb = source_build.check_free_disk_gb(lay.install_root)
+        if free_gb is not None and free_gb < source_build.MIN_FREE_DISK_GB:
+            log.error(
+                "Only %.1fGB free at %s; a from-source build needs roughly %dGB. Free up space "
+                "and re-run.", free_gb, lay.install_root, source_build.MIN_FREE_DISK_GB,
+            )
+            return 1
+
+        build_root = lay.install_root / "llama.cpp-build"
+        log.info(
+            "Building llama-server (tag=%s, cuda_arch=%s) -- this can take well over an hour on a "
+            "low-power board; output follows live", manifest["tag"], strategy.cuda_arch,
+        )
+        server_bin = source_build.ensure_llama_server_built(
+            REPO_ROOT, build_root, manifest["tag"],
+            cuda_arch=strategy.cuda_arch, jobs=args.jobs, timeout=args.build_timeout,
+        )
+        asset_key = f"source-build:{profile.asset_key}"
+        llama_dir = server_bin.parent.parent
+    else:
+        asset_key, asset_entry = strategy.asset_key, strategy.asset_entry
+        log.info("Resolved asset: %s (%s)", asset_key, asset_entry["file"])
+
+        archive_path = fetch.download_asset(manifest, asset_entry, lay.state_dir / "downloads")
+        llama_dir = fetch.extract_archive(archive_path, lay.install_root / "llama.cpp", manifest["tag"], asset_key)
+
+        server_bin = fetch.find_binary(llama_dir, "llama-server")
+
     log.info("llama-server binary: %s", server_bin)
 
     runtime_config = {
         "llama_cpp": {
             "tag": manifest["tag"],
             "asset_key": asset_key,
+            "built_from_source": strategy.use_source_build,
             "install_dir": str(llama_dir),
             "server_binary": str(server_bin),
             "lib_dir": str(server_bin.parent),
