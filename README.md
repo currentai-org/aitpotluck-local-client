@@ -2,12 +2,28 @@
 
 Cross-platform installer and local inference server wrapper. Wraps
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (pinned as a git
-submodule at `vendor/llama.cpp` for reference/docs; the installer itself
-downloads prebuilt release binaries rather than building from source) and
-installs a small companion Python service that keeps `llama-server`
-running at all times.
+submodule at `vendor/llama.cpp`) and installs a small companion Python
+service that keeps `llama-server` running at all times.
+
+The installer prefers a prebuilt release binary, but not every host has one it
+can actually run: `aipotluck/installer/build_strategy.py` decides this per
+host (no published asset for the detected backend/arch, e.g. every
+Jetson-class arm64+CUDA board; or the best available asset needs a newer
+glibc than the host has), and `aipotluck/installer/source_build.py` builds
+`llama-server` from the same pinned `vendor/llama.cpp` tag when it's needed.
+See "Confirmed hardware" below for what's actually been run where.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale.
+
+## Confirmed hardware
+
+| Host | OS | Backend | Install path | Status |
+| --- | --- | --- | --- | --- |
+| x86_64 laptop | Ubuntu 24.04 | CPU | prebuilt `linux-x64-cpu` asset | confirmed |
+| NVIDIA Jetson Orin Nano 8GB (Developer Kit Super) | JetPack 6.2.3 (Ubuntu 22.04, glibc 2.35) | CUDA (SM 8.7) | source build (no `linux-arm64-cuda` asset exists, and the `linux-arm64-cpu` asset needs glibc 2.38, which JetPack doesn't have) | in progress -- see below |
+
+Everything else in "Status" just below is implemented against documented OS
+conventions but not run on real hardware yet.
 
 ## Status
 
@@ -110,8 +126,60 @@ The Python installer's flags (the PowerShell wrapper exposes the equivalent
 --ctx-size N           llama-server context size (default: 4096)
 --gpu-layers VALUE     llama-server -ngl value: int, 'auto', or 'all'
 --server-host / --server-port  llama-server bind address (default 127.0.0.1:8080)
+--no-source-build      Fail instead of building llama-server from source when
+                       no prebuilt asset is viable for this host
+--jobs N               Parallel build jobs for a from-source build (default:
+                       auto, capped by available RAM)
+--build-timeout SECS   Wall-clock ceiling for a from-source build (default: 5400)
 -v / --verbose
 ```
+
+### Building from source
+
+Not every host has a prebuilt release binary it can actually run --
+`build_strategy.py` checks this (not just "does an asset exist for this
+os/arch/backend", but "does the *specific* asset resolve to something this
+glibc can run") and `source_build.py` builds `llama-server` from the pinned
+`vendor/llama.cpp` tag instead when it doesn't. This is automatic; you'll
+see it happen if the installer logs "No viable prebuilt asset for this
+host... building llama-server from source" instead of "Resolved asset:".
+
+Two concrete cases this covers today:
+
+- **No prebuilt asset for the detected backend at all** -- every
+  Jetson-class arm64+CUDA board: `nvidia-smi` genuinely works there and CUDA
+  is real, but llama.cpp's release CI has never published a
+  `linux-arm64-cuda` asset.
+- **The best available asset needs a newer glibc than the host has** --
+  llama.cpp's release CI builds its Linux arm64 assets against a newer base
+  image than most arm64 boards actually run. Confirmed live: the pinned
+  `linux-arm64-cpu` asset needs glibc 2.38; JetPack 6.2.3 (Ubuntu 22.04)
+  ships 2.35, so even the CPU-only fallback refuses to start there.
+
+A source build needs `cmake`, a C++17 compiler, and (for CUDA) `nvcc` from
+the CUDA toolkit already on the host -- the installer checks for these (plus
+OpenSSL dev headers, see below) and refuses with an exact `apt-get install`
+line for whatever's missing, rather than trying to `sudo apt-get install`
+anything itself (many hosts, including the reference Jetson, need an
+interactive sudo password, which a non-interactive install can't supply).
+
+**One easy-to-miss gap if you install these yourself ahead of time:** llama.cpp's
+HTTPS support (used by `-hf` and `--cache-list` -- i.e. this project's own
+`pull`/`list` commands) needs OpenSSL dev headers (`libssl-dev` on
+Debian/Ubuntu) at build time. Missing them does **not** fail the build --
+`cmake` configures successfully and only fails later, at runtime, the first
+time something tries to download a model. The installer's preflight check
+catches this before ever starting a build that can otherwise take well over
+an hour on a low-power board.
+
+A from-source build is slow and memory-hungry (`--jobs` defaults to a
+conservative estimate based on available RAM, since a naive `-j$(nproc)` can
+OOM or swap-thrash a low-memory board) and needs real disk space (a few GB
+for the build; the installer refuses up front if less than 6GB is free
+rather than fail 40 minutes in from `ENOSPC`). Re-running the installer
+after a successful source build is fast -- it's keyed to the exact
+tag+backend combination and skips straight to reusing the binary already
+built.
 
 After install, the service:
 
@@ -232,13 +300,16 @@ No real network and no real systemd/launchd. Every OS/network/service-manager bo
 `urllib.request.urlopen`) is mocked or swapped for a lightweight fake; only real filesystem
 writes happen, always rooted under pytest's own `tmp_path` -- the suite never touches the actual
 per-OS install locations (`~/.local/bin`, `~/.config/aipotluck`, a real systemd unit, etc.). One
-deliberate exception: `test_model_pull.py` runs a real subprocess (a tiny stand-in script playing
-the part of `llama-server`) and polls a real socket -- spawn/health-poll/terminate orchestration
-is exactly the kind of thing a mock can make *look* correct while testing nothing, so that one
-module is exercised for real instead. Covers `platform_detect.py`, `layout.py`, `cli.py`
-(including the argparse regression -- see `test_cli_argparse.py`'s docstring), `cli_shim.py`,
-`model_pull.py`'s `pull`/`list` orchestration, `install.py`'s `--no-service` and real install
-paths, and `service/runner.py`'s login-gating and `/status` secret redaction.
+deliberate exception: `test_model_pull.py` and `test_source_build.py` run a real subprocess (a
+tiny stand-in script playing the part of `llama-server`/`cmake`) and, for the latter, a real
+spawned grandchild process to prove a build timeout actually kills the whole process tree --
+spawn/health-poll/terminate (or configure/build/kill) orchestration is exactly the kind of thing a
+mock can make *look* correct while testing nothing, so those modules are exercised for real
+instead. Covers `platform_detect.py` (including glibc/CUDA-compute-capability detection),
+`build_strategy.py`'s prebuilt-vs-source-build decision, `layout.py`, `cli.py` (including the
+argparse regression -- see `test_cli_argparse.py`'s docstring), `cli_shim.py`, `model_pull.py`'s
+`pull`/`list` orchestration, `install.py`'s `--no-service`/source-build/real install paths, and
+`service/runner.py`'s login-gating and `/status` secret redaction.
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
@@ -261,7 +332,9 @@ aipotluck/                      the root package everything below lives under
     install.py                    installer CLI entry point -- always produces a logged-out install
     cli.py                         login/logout/status CLI for an already-installed device
     cli_shim.py                    writes the `aipotluck-local-client` wrapper onto PATH (see "CLI on PATH")
-    platform_detect.py             OS/arch/GPU-backend detection
+    platform_detect.py             OS/arch/GPU-backend/glibc/CUDA-compute-capability detection
+    build_strategy.py              decide prebuilt-asset vs. build-from-source per host
+    source_build.py                configure+build llama-server from vendor/llama.cpp
     fetch.py                       download+checksum+extract llama.cpp releases
     newt_fetch.py                  download+checksum-verify the pinned newt binary
     layout.py                      per-OS install paths
