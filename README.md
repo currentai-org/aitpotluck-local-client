@@ -141,18 +141,21 @@ below) that runs the thin login/logout/status CLI
 (`aipotluck/installer/cli.py`) against whatever device is installed here:
 
 ```bash
-aipotluck-local-client login     # prompts for Tunnel ID / secret / endpoint, one at a time
+aipotluck-local-client login     # prompts for the pairing JSON -- paste it, press Enter
 aipotluck-local-client status    # asks the running service for its login/tunnel/llama-server state
 aipotluck-local-client logout    # unpairs; llama-server and the tunnel stop until you log in again
 ```
 
-Get the three values from **Settings -> Local Inference -> Add a managed
-server** on aipotluck.org -- click "Pair", and it shows you what to paste in
-(shown once; it isn't retrievable again after that). `login` also accepts
-`--tunnel-id`/`--tunnel-secret`/`--tunnel-endpoint` directly (all three or
-none) if you'd rather script it than be prompted -- given after the
-subcommand (`login --tunnel-id ...`), not before (`--install-dir` and the
-other shared flags below are the same way; see cli.py's own comment on why).
+Get the pairing JSON from **Settings -> Local Inference -> Add a managed server** on
+aipotluck.org -- click "Pair", then its **Copy** button puts
+`{"tunnelId": "...", "tunnelSecret": "...", "tunnelEndpoint": "..."}` on your clipboard (shown
+once; it isn't retrievable again after that). Paste that straight into the `login` prompt. Two
+alternatives to pasting: `login --credentials-file creds.json` reads the same JSON shape from a
+file, and `login --tunnel-id X --tunnel-secret Y --tunnel-endpoint Z` accepts the three values as
+separate flags for scripting (all three or none). All three forms are mutually exclusive, and
+every flag here is given after the subcommand (`login --tunnel-id ...`), not before
+(`--install-dir` and the other shared flags below are the same way; see cli.py's own comment on
+why).
 
 Logging in/out edits `runtime.json`'s `tunnel` section and `logged_in` flag,
 downloads the pinned `newt` binary the first time (cached after that), and

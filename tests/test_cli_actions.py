@@ -28,6 +28,7 @@ def make_args(install_dir: Path, **overrides) -> Namespace:
         tunnel_id=None,
         tunnel_secret=None,
         tunnel_endpoint=None,
+        credentials_file=None,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -135,41 +136,148 @@ class TestRunLogin:
 
         assert rc == 0
 
-    def test_prompts_interactively_when_no_flags_given(self, tmp_path, fake_service_manager, fake_newt_fetch, monkeypatch):
+    def test_prompts_for_credentials_json_when_no_flags_given(
+        self, tmp_path, fake_service_manager, fake_newt_fetch, monkeypatch
+    ):
         install_dir = tmp_path / "install"
         runtime_path = write_runtime(install_dir, {"llama_cpp": {}, "service": {}, "logged_in": False})
-        prompted_fields = []
-
-        def fake_prompt(field, *, secret=False):
-            prompted_fields.append((field, secret))
-            return {"Tunnel ID": "prompted-id", "Tunnel secret": "prompted-secret", "Tunnel endpoint URL": "prompted-url"}[field]
-
-        monkeypatch.setattr(cli, "_prompt", fake_prompt)
-        args = make_args(install_dir)  # all three tunnel_* left at their None default
+        monkeypatch.setattr(
+            cli, "_prompt_credentials_json", lambda: ("prompted-id", "prompted-secret", "prompted-url")
+        )
+        args = make_args(install_dir)  # tunnel_* and credentials_file all left at their None default
 
         rc = cli.run_login(args)
 
         assert rc == 0
-        assert prompted_fields == [("Tunnel ID", False), ("Tunnel secret", True), ("Tunnel endpoint URL", False)]
         saved = json.loads(runtime_path.read_text())
         assert saved["tunnel"]["id"] == "prompted-id"
         assert saved["tunnel"]["secret"] == "prompted-secret"
         assert saved["tunnel"]["endpoint"] == "prompted-url"
 
+    def test_credentials_file_is_read_and_used(self, tmp_path, fake_service_manager, fake_newt_fetch):
+        install_dir = tmp_path / "install"
+        runtime_path = write_runtime(install_dir, {"llama_cpp": {}, "service": {}, "logged_in": False})
+        creds_path = tmp_path / "creds.json"
+        creds_path.write_text(
+            json.dumps({"tunnelId": "file-id", "tunnelSecret": "file-secret", "tunnelEndpoint": "file-url"}),
+            encoding="utf-8",
+        )
+        args = make_args(install_dir, credentials_file=creds_path)
 
-class TestPrompt:
-    def test_retries_on_empty_input(self, monkeypatch, capsys):
-        answers = iter(["", "   ", "real-value"])
-        monkeypatch.setattr(cli, "input", lambda _prompt_text: next(answers), raising=False)
+        rc = cli.run_login(args)
 
-        result = cli._prompt("Some field")
+        assert rc == 0
+        saved = json.loads(runtime_path.read_text())
+        assert saved["tunnel"]["id"] == "file-id"
+        assert saved["tunnel"]["secret"] == "file-secret"
+        assert saved["tunnel"]["endpoint"] == "file-url"
 
-        assert result == "real-value"
+    def test_credentials_file_with_invalid_json_is_rejected(self, tmp_path, fake_service_manager, caplog):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {}, "service": {}, "logged_in": False})
+        creds_path = tmp_path / "creds.json"
+        creds_path.write_text("not json", encoding="utf-8")
+        args = make_args(install_dir, credentials_file=creds_path)
+
+        with caplog.at_level(logging.ERROR, logger="aipotluck.cli"):
+            rc = cli.run_login(args)
+
+        assert rc == 1
+        assert any("not valid JSON" in rec.message for rec in caplog.records)
+
+    def test_missing_credentials_file_is_rejected(self, tmp_path, fake_service_manager):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {}, "service": {}, "logged_in": False})
+        args = make_args(install_dir, credentials_file=tmp_path / "does-not-exist.json")
+
+        rc = cli.run_login(args)
+
+        assert rc == 1
+
+    def test_credentials_file_and_tunnel_flags_together_is_rejected(self, tmp_path, fake_service_manager):
+        args = make_args(
+            tmp_path / "install", credentials_file=tmp_path / "creds.json",
+            tunnel_id="tid", tunnel_secret="s", tunnel_endpoint="e",
+        )
+
+        rc = cli.run_login(args)
+
+        assert rc == 1
+        fake_service_manager.stop.assert_not_called()
+
+
+class TestParseCredentialsJson:
+    def test_parses_valid_json(self):
+        raw = json.dumps({"tunnelId": "i", "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        assert cli._parse_credentials_json(raw) == ("i", "s", "e")
+
+    def test_rejects_invalid_json(self):
+        with pytest.raises(cli.CredentialsError, match="not valid JSON"):
+            cli._parse_credentials_json("{not json")
+
+    def test_rejects_a_json_array(self):
+        with pytest.raises(cli.CredentialsError, match="JSON object"):
+            cli._parse_credentials_json("[1, 2, 3]")
+
+    def test_rejects_missing_key(self):
+        raw = json.dumps({"tunnelId": "i", "tunnelSecret": "s"})  # no tunnelEndpoint
+        with pytest.raises(cli.CredentialsError, match="tunnelEndpoint"):
+            cli._parse_credentials_json(raw)
+
+    def test_rejects_empty_string_value(self):
+        raw = json.dumps({"tunnelId": "", "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        with pytest.raises(cli.CredentialsError, match="tunnelId"):
+            cli._parse_credentials_json(raw)
+
+    def test_rejects_non_string_value(self):
+        raw = json.dumps({"tunnelId": 12345, "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        with pytest.raises(cli.CredentialsError, match="tunnelId"):
+            cli._parse_credentials_json(raw)
+
+
+class TestPromptCredentialsJson:
+    def test_returns_parsed_credentials_on_first_valid_paste(self, monkeypatch):
+        raw = json.dumps({"tunnelId": "i", "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        monkeypatch.setattr(cli.getpass, "getpass", lambda _prompt_text: raw)
+
+        assert cli._prompt_credentials_json() == ("i", "s", "e")
+
+    def test_retries_on_empty_paste(self, monkeypatch, capsys):
+        raw = json.dumps({"tunnelId": "i", "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        answers = iter(["", "   ", raw])
+        monkeypatch.setattr(cli.getpass, "getpass", lambda _prompt_text: next(answers))
+
+        result = cli._prompt_credentials_json()
+
+        assert result == ("i", "s", "e")
         assert capsys.readouterr().out.count("(required, try again)") == 2
 
-    def test_secret_uses_getpass(self, monkeypatch):
-        monkeypatch.setattr(cli.getpass, "getpass", lambda _prompt_text: "hidden-value")
-        assert cli._prompt("Secret field", secret=True) == "hidden-value"
+    def test_retries_on_invalid_json(self, monkeypatch, capsys):
+        valid = json.dumps({"tunnelId": "i", "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        answers = iter(["not json at all", valid])
+        monkeypatch.setattr(cli.getpass, "getpass", lambda _prompt_text: next(answers))
+
+        result = cli._prompt_credentials_json()
+
+        assert result == ("i", "s", "e")
+        assert "Try again" in capsys.readouterr().out
+
+    def test_never_echoes_input(self, monkeypatch):
+        # The whole point of using getpass here is that the secret embedded in the pasted JSON is
+        # never echoed -- assert the prompt path goes through getpass.getpass, not the plain
+        # echoing `input()` builtin.
+        calls = []
+        raw = json.dumps({"tunnelId": "i", "tunnelSecret": "s", "tunnelEndpoint": "e"})
+        monkeypatch.setattr(cli.getpass, "getpass", lambda prompt_text: calls.append(prompt_text) or raw)
+
+        def _fail_if_called(*_args):
+            raise AssertionError("must not use input() -- it would echo the secret")
+
+        monkeypatch.setattr(cli, "input", _fail_if_called, raising=False)
+
+        cli._prompt_credentials_json()
+
+        assert len(calls) == 1
 
 
 class TestRunLogout:

@@ -85,6 +85,23 @@ class TestLoginTunnelFlags:
         with pytest.raises(SystemExit):
             parser.parse_args(["status", "--tunnel-id", "abc"])
 
+    def test_credentials_file_defaults_to_none(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["login"])
+        assert args.credentials_file is None
+
+    def test_credentials_file_parses_to_a_path(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["login", "--credentials-file", "/tmp/creds.json"])
+        assert args.credentials_file == Path("/tmp/creds.json")
+
+    def test_logout_and_status_have_no_credentials_file_flag(self):
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["logout", "--credentials-file", "/tmp/x.json"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["status", "--credentials-file", "/tmp/x.json"])
+
 
 class TestPullArgs:
     def test_model_is_required(self):

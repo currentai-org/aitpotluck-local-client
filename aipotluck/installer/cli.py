@@ -14,7 +14,8 @@ below is the fallback for a `--no-service` install (which skips the shim) or a c
 doesn't reach yet.
 
 Usage:
-    aipotluck-local-client login    # prompts for tunnel id/secret/endpoint, one at a time
+    aipotluck-local-client login    # prompts for the pairing JSON (paste it from Settings)
+    aipotluck-local-client login --credentials-file creds.json   # or read it from a file
     aipotluck-local-client logout   # unpairs; llama-server and the tunnel stop until you log in again
     aipotluck-local-client status   # asks the running service for its login/tunnel/llama-server state
     aipotluck-local-client pull <hf-repo[:quant]>   # download + activate a model ahead of time
@@ -89,11 +90,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     login = sub.add_parser("login", parents=[common], help="Pair this device with a managed tunnel endpoint")
     login.add_argument(
-        "--tunnel-id", default=None,
-        help="Skip the interactive prompt (scripting only); must be given with the other two --tunnel-* flags",
+        "--credentials-file", type=Path, default=None,
+        help="Read the pairing JSON ({tunnelId, tunnelSecret, tunnelEndpoint}) from this file instead "
+             "of pasting it -- the same JSON Settings -> Local Inference's Copy button copies. Mutually "
+             "exclusive with --tunnel-id/--tunnel-secret/--tunnel-endpoint.",
     )
-    login.add_argument("--tunnel-secret", default=None, help="Skip the interactive prompt (scripting only)")
-    login.add_argument("--tunnel-endpoint", default=None, help="Skip the interactive prompt (scripting only)")
+    login.add_argument(
+        "--tunnel-id", default=None,
+        help="Skip the prompt (scripting only); must be given with the other two --tunnel-* flags, "
+             "and not with --credentials-file",
+    )
+    login.add_argument("--tunnel-secret", default=None, help="Skip the prompt (scripting only)")
+    login.add_argument("--tunnel-endpoint", default=None, help="Skip the prompt (scripting only)")
 
     sub.add_parser(
         "logout", parents=[common],
@@ -174,30 +182,77 @@ def _restart_service(os_name: str, system_scope: bool) -> None:
         )
 
 
-def _prompt(field: str, *, secret: bool = False) -> str:
+class CredentialsError(ValueError):
+    pass
+
+
+def _parse_credentials_json(raw: str) -> tuple[str, str, str]:
+    """Parses the `{tunnelId, tunnelSecret, tunnelEndpoint}` JSON that Settings -> Local Inference's
+    Copy button puts on the clipboard (compact, single line by design -- see that button's own
+    comment) -- the same shape --credentials-file reads from disk. Raises CredentialsError with a
+    message fit to show the user directly on anything wrong: bad JSON, wrong shape, missing/empty/
+    non-string key."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CredentialsError(f"That's not valid JSON ({exc}).") from exc
+    if not isinstance(data, dict):
+        raise CredentialsError("Expected a JSON object with tunnelId/tunnelSecret/tunnelEndpoint.")
+
+    required = ("tunnelId", "tunnelSecret", "tunnelEndpoint")
+    missing = [key for key in required if not data.get(key)]
+    if missing:
+        raise CredentialsError(f"Missing (or empty) key(s): {', '.join(missing)}.")
+    non_strings = [key for key in required if not isinstance(data[key], str)]
+    if non_strings:
+        raise CredentialsError(f"Key(s) must be strings: {', '.join(non_strings)}.")
+
+    return data["tunnelId"], data["tunnelSecret"], data["tunnelEndpoint"]
+
+
+def _prompt_credentials_json() -> tuple[str, str, str]:
+    print("Pair this device with a managed tunnel endpoint.")
+    print("Paste the JSON from Settings -> Local Inference -> Add a managed server (its Copy button")
+    print("copies exactly this), then press Enter.")
+    print()
     while True:
-        raw = getpass.getpass(f"{field}: ") if secret else input(f"{field}: ")
-        value = raw.strip()
-        if value:
-            return value
-        print("  (required, try again)")
+        # getpass, not input: the pasted blob contains the tunnel secret, so this must not echo to
+        # the terminal (or land in a screen recording/over-the-shoulder view) any more than a bare
+        # secret prompt would have.
+        raw = getpass.getpass("Credentials JSON: ").strip()
+        if not raw:
+            print("  (required, try again)")
+            continue
+        try:
+            return _parse_credentials_json(raw)
+        except CredentialsError as exc:
+            print(f"  {exc} Try again.")
 
 
 def run_login(args: argparse.Namespace) -> int:
-    given = [args.tunnel_id, args.tunnel_secret, args.tunnel_endpoint]
-    if any(given) and not all(given):
+    flags_given = [args.tunnel_id, args.tunnel_secret, args.tunnel_endpoint]
+    if args.credentials_file and any(flags_given):
+        log.error("Pass --credentials-file or --tunnel-id/--tunnel-secret/--tunnel-endpoint, not both.")
+        return 1
+    if any(flags_given) and not all(flags_given):
         log.error("Pass all three of --tunnel-id/--tunnel-secret/--tunnel-endpoint, or none to be prompted.")
         return 1
 
-    if all(given):
+    if all(flags_given):
         tunnel_id, tunnel_secret, tunnel_endpoint = args.tunnel_id, args.tunnel_secret, args.tunnel_endpoint
+    elif args.credentials_file:
+        try:
+            raw = args.credentials_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            log.error("Could not read %s: %s", args.credentials_file, exc)
+            return 1
+        try:
+            tunnel_id, tunnel_secret, tunnel_endpoint = _parse_credentials_json(raw)
+        except CredentialsError as exc:
+            log.error("%s (in %s)", exc, args.credentials_file)
+            return 1
     else:
-        print("Pair this device with a managed tunnel endpoint.")
-        print("Paste the three values from Settings -> Local Inference -> Add a managed server, one at a time.")
-        print()
-        tunnel_id = _prompt("Tunnel ID")
-        tunnel_secret = _prompt("Tunnel secret", secret=True)
-        tunnel_endpoint = _prompt("Tunnel endpoint URL")
+        tunnel_id, tunnel_secret, tunnel_endpoint = _prompt_credentials_json()
 
     profile, lay = _profile_and_layout(args)
     runtime_path = _runtime_path(lay)
