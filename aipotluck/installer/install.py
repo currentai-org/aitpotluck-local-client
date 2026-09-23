@@ -194,7 +194,7 @@ def run_install(args: argparse.Namespace) -> int:
             )
             return 1
 
-        problems = source_build.check_build_prerequisites(want_cuda=strategy.cuda_arch is not None)
+        problems = source_build.check_build_prerequisites(backend=profile.backend)
         if problems:
             apt_packages = source_build.missing_apt_packages() if not args.no_apt_install else []
             if apt_packages and source_build.has_apt() and (
@@ -205,7 +205,7 @@ def run_install(args: argparse.Namespace) -> int:
                 except source_build.AptInstallError as exc:
                     log.error("Installing dependencies failed: %s", exc)
                     return 1
-                problems = source_build.check_build_prerequisites(want_cuda=strategy.cuda_arch is not None)
+                problems = source_build.check_build_prerequisites(backend=profile.backend)
 
         if problems:
             log.error("Can't build llama-server from source -- missing prerequisites:")

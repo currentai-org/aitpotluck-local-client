@@ -9,16 +9,34 @@ non-interactive installer would just hang or fail confusingly), check out the pi
 vendor/llama.cpp submodule, configure + build with resource-aware parallelism, and locate the
 resulting binary the same way fetch.py locates one inside an extracted release archive.
 
-The one build-time gotcha worth a full explanation (see check_build_prerequisites): llama.cpp's
-HTTPS support -- which `-hf`/`--cache-list`, and therefore this project's own pull/list commands,
-depend on -- is compiled in via a plain, non-REQUIRED find_package(OpenSSL). Configure without
-libssl-dev installed SUCCEEDS, silently, and the gap only shows up later as a runtime error the
-first time something tries to download a model. Preflight checks for the header file before ever
-starting cmake specifically to avoid burning a 30-90 minute build on a binary with this missing.
+The full set of packages this checks for (see missing_apt_packages) was cross-referenced against
+llama.cpp's own release CI, not guessed from one host's missing package -- every Linux
+build-*.yml/release.yml job (cpu, cuda, vulkan, rocm) was read for its own `apt-get install` line,
+intersected with what a native GGML_NATIVE=ON build of just the llama-server target actually needs
+(their CI installs several things -- ninja-build, python3-venv, git-lfs, libjpeg-dev -- that are
+there for CI's own portable multi-arch/test/conversion-script concerns, none of which apply here;
+confirmed libjpeg-dev in particular isn't a real llama.cpp build dependency at all, by checking that
+nothing in the CMake tree does find_package(JPEG) -- image loading goes through the header-only
+stb_image instead).
+
+Two build-time gotchas are worth a full explanation, both the same shape (a plain, non-REQUIRED
+find_package(...) that degrades SILENTLY -- configure still succeeds -- rather than failing loud):
+
+- llama.cpp's HTTPS support (`-hf`/`--cache-list`, which this project's own pull/list commands
+  depend on) needs libssl-dev; without it, configure succeeds and the gap only shows up later as a
+  runtime error the first time something tries to download a model.
+- OpenMP multi-threading on the CPU backend (ggml/src/CMakeLists.txt's `find_package(OpenMP)`)
+  needs libgomp1; without it, configure succeeds with only a `message(WARNING "OpenMP not found")`
+  buried in build output, and the binary silently falls back to single-threaded CPU inference --
+  no error, just much slower than it should be.
+
+Preflight checks for both before ever starting cmake, specifically to avoid either burning a
+30-90 minute build on a binary with a silent gap, or only noticing the slowdown/breakage after.
 """
 
 from __future__ import annotations
 
+import ctypes.util
 import logging
 import os
 import shutil
@@ -36,6 +54,10 @@ MIN_FREE_DISK_GB = 6
 _OPENSSL_HEADER_CANDIDATES = (
     Path("/usr/include/openssl/ssl.h"),
     Path("/usr/local/include/openssl/ssl.h"),
+)
+_VULKAN_HEADER_CANDIDATES = (
+    Path("/usr/include/vulkan/vulkan.h"),
+    Path("/usr/local/include/vulkan/vulkan.h"),
 )
 
 
@@ -75,6 +97,22 @@ def _has_openssl_headers() -> bool:
     return False
 
 
+def _has_libgomp() -> bool:
+    return ctypes.util.find_library("gomp") is not None
+
+
+def find_glslc() -> str | None:
+    return shutil.which("glslc")
+
+
+def _has_vulkan_headers() -> bool:
+    return any(p.exists() for p in _VULKAN_HEADER_CANDIDATES)
+
+
+def find_hipcc() -> str | None:
+    return shutil.which("hipcc")
+
+
 _APT_PACKAGE_PROBLEMS = {
     "cmake": "cmake not found",
     "git": "git not found",
@@ -84,16 +122,25 @@ _APT_PACKAGE_PROBLEMS = {
         "--cache-list (this CLI's pull/list commands) compile out silently without them, with "
         "no build error, only a later runtime one"
     ),
+    "libgomp1": (
+        "OpenMP runtime (libgomp) not found -- ggml's find_package(OpenMP) degrades silently the "
+        "same way OpenSSL does: configure succeeds with only a build-log warning, and the CPU "
+        "backend falls back to single-threaded inference with no error, just much slower than it "
+        "should be"
+    ),
 }
 
 
 def missing_apt_packages() -> list[str]:
     """The subset of build gaps a single `apt-get install` can actually fix -- cmake, git, a C++
-    compiler, OpenSSL headers. Deliberately excludes the CUDA toolkit (nvcc): that's not a small,
-    safe auto-install -- it's a multi-GB toolkit, its package name differs per distro, and on
-    Jetson/JetPack it's the vendor-managed OS image, not something this installer should ever
-    touch. A missing nvcc always stays an instruction, never something install_apt_packages
-    installs, no matter how apt-install is invoked."""
+    compiler, OpenSSL headers, the OpenMP runtime. Cross-referenced against every Linux
+    build-*.yml/release.yml job in llama.cpp's own CI (cpu/cuda/vulkan/rocm all install this same
+    core set); see this module's docstring for what CI installs beyond this that isn't actually
+    needed here. Deliberately excludes any GPU vendor toolchain (CUDA's nvcc, Vulkan's SDK
+    components, ROCm's hipcc/rocblas/etc.): none of those are a small, safe auto-install -- they're
+    multi-GB, vendor-repo-only, and on Jetson/JetPack the CUDA toolkit specifically is the
+    vendor-managed OS image. Those gaps always stay an instruction (see check_build_prerequisites),
+    never something install_apt_packages installs, no matter how apt-install is invoked."""
     packages = []
     if shutil.which("cmake") is None:
         packages.append("cmake")
@@ -103,6 +150,8 @@ def missing_apt_packages() -> list[str]:
         packages.append("build-essential")
     if not _has_openssl_headers():
         packages.append("libssl-dev")
+    if not _has_libgomp():
+        packages.append("libgomp1")
     return packages
 
 
@@ -141,20 +190,35 @@ def install_apt_packages(packages: list[str], *, timeout: float = 300) -> None:
         )
 
 
-def check_build_prerequisites(*, want_cuda: bool) -> list[str]:
+def check_build_prerequisites(*, backend: str) -> list[str]:
     """Return a list of human-readable problems; empty means the host is ready to build. Every
     entry names both the gap and the exact fix (never just "cmake missing") -- for the
     apt-fixable ones (see missing_apt_packages), the caller may offer to fix them automatically
-    with explicit consent; nvcc never gets that treatment, see missing_apt_packages' docstring."""
+    with explicit consent; a GPU vendor toolchain gap (nvcc/Vulkan SDK components/hipcc) never
+    gets that treatment, see missing_apt_packages' docstring for why."""
     problems = [
         f"{_APT_PACKAGE_PROBLEMS[pkg]} (sudo apt-get install -y {pkg})"
         for pkg in missing_apt_packages()
     ]
-    if want_cuda and find_nvcc() is None:
+    if backend == "cuda" and find_nvcc() is None:
         problems.append(
             "nvcc not found -- CUDA was detected (nvidia-smi works) but the CUDA toolkit compiler "
             "isn't on PATH or under /usr/local/cuda*/bin. On JetPack this ships with the OS image; "
             "check `ls /usr/local/cuda*/bin/nvcc` and add its directory to PATH."
+        )
+    if backend == "vulkan" and (find_glslc() is None or not _has_vulkan_headers()):
+        problems.append(
+            "Vulkan SDK components not found (glslc shader compiler and/or vulkan/vulkan.h) -- "
+            "these come from distro/vendor-specific packages (e.g. Debian/Ubuntu: libvulkan-dev "
+            "plus glslc from the LunarG Vulkan SDK, package names differ by release) rather than "
+            "one generic apt package this installer can safely guess. Install them for your "
+            "distro, then re-run."
+        )
+    if backend == "rocm" and find_hipcc() is None:
+        problems.append(
+            "hipcc not found -- ROCm was requested but its dev toolchain isn't on PATH. Like the "
+            "CUDA toolkit, ROCm comes from AMD's own repo/installer, not a plain apt package this "
+            "installer can safely install automatically."
         )
     return problems
 

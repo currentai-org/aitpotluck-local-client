@@ -78,37 +78,81 @@ def fake_cmake(tmp_path: Path) -> Path:
 
 
 class TestCheckBuildPrerequisites:
-    def test_all_present_is_no_problems(self, monkeypatch):
+    def _mock_all_present(self, monkeypatch):
         monkeypatch.setattr(sb.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(sb, "_has_openssl_headers", lambda: True)
-        assert sb.check_build_prerequisites(want_cuda=False) == []
+        monkeypatch.setattr(sb, "_has_libgomp", lambda: True)
+
+    def test_all_present_is_no_problems(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
+        assert sb.check_build_prerequisites(backend="cpu") == []
 
     def test_missing_cmake_is_reported_with_the_apt_fix(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
         monkeypatch.setattr(sb.shutil, "which", lambda name: None if name == "cmake" else f"/usr/bin/{name}")
-        monkeypatch.setattr(sb, "_has_openssl_headers", lambda: True)
-        problems = sb.check_build_prerequisites(want_cuda=False)
+        problems = sb.check_build_prerequisites(backend="cpu")
         assert any("cmake" in p and "apt-get install" in p for p in problems)
 
     def test_missing_openssl_headers_is_reported_even_though_it_wont_fail_the_build(self, monkeypatch):
         # The whole reason this check exists: a missing libssl-dev does NOT fail cmake configure,
         # so if we didn't check for it here, nothing would ever catch it before a wasted build.
-        monkeypatch.setattr(sb.shutil, "which", lambda name: f"/usr/bin/{name}")
+        self._mock_all_present(monkeypatch)
         monkeypatch.setattr(sb, "_has_openssl_headers", lambda: False)
-        problems = sb.check_build_prerequisites(want_cuda=False)
+        problems = sb.check_build_prerequisites(backend="cpu")
         assert any("libssl-dev" in p for p in problems)
 
-    def test_cuda_wanted_but_no_nvcc_is_reported(self, monkeypatch):
-        monkeypatch.setattr(sb.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(sb, "_has_openssl_headers", lambda: True)
+    def test_missing_libgomp_is_reported_even_though_it_wont_fail_the_build(self, monkeypatch):
+        # Same shape as OpenSSL -- find_package(OpenMP) degrades silently too (build-log warning,
+        # not a configure failure), so this must be caught the same way.
+        self._mock_all_present(monkeypatch)
+        monkeypatch.setattr(sb, "_has_libgomp", lambda: False)
+        problems = sb.check_build_prerequisites(backend="cpu")
+        assert any("libgomp" in p for p in problems)
+
+    def test_cuda_backend_but_no_nvcc_is_reported(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
         monkeypatch.setattr(sb, "find_nvcc", lambda: None)
-        problems = sb.check_build_prerequisites(want_cuda=True)
+        problems = sb.check_build_prerequisites(backend="cuda")
         assert any("nvcc" in p for p in problems)
 
-    def test_cuda_not_wanted_never_checks_for_nvcc(self, monkeypatch):
-        monkeypatch.setattr(sb.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(sb, "_has_openssl_headers", lambda: True)
+    def test_cpu_backend_never_checks_for_nvcc(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
         monkeypatch.setattr(sb, "find_nvcc", lambda: None)
-        assert sb.check_build_prerequisites(want_cuda=False) == []
+        assert sb.check_build_prerequisites(backend="cpu") == []
+
+    def test_vulkan_backend_missing_glslc_or_headers_is_reported(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
+        monkeypatch.setattr(sb, "find_glslc", lambda: None)
+        monkeypatch.setattr(sb, "_has_vulkan_headers", lambda: True)
+        problems = sb.check_build_prerequisites(backend="vulkan")
+        assert any("Vulkan" in p for p in problems)
+
+    def test_vulkan_backend_satisfied_is_no_problem(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
+        monkeypatch.setattr(sb, "find_glslc", lambda: "/usr/bin/glslc")
+        monkeypatch.setattr(sb, "_has_vulkan_headers", lambda: True)
+        assert sb.check_build_prerequisites(backend="vulkan") == []
+
+    def test_non_vulkan_backend_never_checks_vulkan(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
+        monkeypatch.setattr(sb, "find_glslc", lambda: None)
+        monkeypatch.setattr(sb, "_has_vulkan_headers", lambda: False)
+        assert sb.check_build_prerequisites(backend="cpu") == []
+
+    def test_rocm_backend_missing_hipcc_is_reported(self, monkeypatch):
+        self._mock_all_present(monkeypatch)
+        monkeypatch.setattr(sb, "find_hipcc", lambda: None)
+        problems = sb.check_build_prerequisites(backend="rocm")
+        assert any("hipcc" in p for p in problems)
+
+    def test_gpu_vendor_toolchain_gaps_are_never_in_missing_apt_packages(self, monkeypatch):
+        # nvcc/glslc/hipcc gaps must never appear as apt-installable -- see missing_apt_packages'
+        # docstring on why those stay instructions no matter how apt-install is invoked.
+        self._mock_all_present(monkeypatch)
+        monkeypatch.setattr(sb, "find_nvcc", lambda: None)
+        monkeypatch.setattr(sb, "find_glslc", lambda: None)
+        monkeypatch.setattr(sb, "find_hipcc", lambda: None)
+        assert sb.missing_apt_packages() == []
 
 
 class TestFindNvcc:

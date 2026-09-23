@@ -69,7 +69,7 @@ def fake_source_build(tmp_path, monkeypatch):
             use_source_build=True, reason="no published asset", cuda_arch="87"
         ),
     )
-    monkeypatch.setattr(install.source_build, "check_build_prerequisites", lambda want_cuda: [])
+    monkeypatch.setattr(install.source_build, "check_build_prerequisites", lambda backend: [])
     monkeypatch.setattr(install.source_build, "check_free_disk_gb", lambda path: 20.0)
     ensure_built = MagicMock(return_value=server_binary)
     monkeypatch.setattr(install.source_build, "ensure_llama_server_built", ensure_built)
@@ -166,7 +166,7 @@ class TestRunInstallSourceBuild:
         _, ensure_built = fake_source_build
         monkeypatch.setattr(
             install.source_build, "check_build_prerequisites",
-            lambda want_cuda: ["cmake not found (sudo apt-get install -y cmake)"],
+            lambda backend: ["cmake not found (sudo apt-get install -y cmake)"],
         )
         args = make_args(tmp_path / "install", ["--no-service"])
 
@@ -250,7 +250,7 @@ class TestRunInstallAptInstallConsent:
         (e.g. the "apt install itself failed" test, where nothing was ever really fixed)."""
         calls = {"n": 0}
 
-        def _check(want_cuda):
+        def _check(backend):
             calls["n"] += 1
             if calls["n"] == 1 or not resolved_by_install:
                 return [f"{p} not found (sudo apt-get install -y {p})" for p in packages]
@@ -339,7 +339,7 @@ class TestRunInstallAptInstallConsent:
         # can't paper over a real nvcc gap; the CUDA toolkit is never something this auto-installs.
         monkeypatch.setattr(
             install.source_build, "check_build_prerequisites",
-            lambda want_cuda: ["nvcc not found -- ..."],
+            lambda backend: ["nvcc not found -- ..."],
         )
         monkeypatch.setattr(install.source_build, "missing_apt_packages", lambda: [])
         install_apt = MagicMock()

@@ -159,30 +159,51 @@ Two concrete cases this covers today:
   `linux-arm64-cpu` asset needs glibc 2.38; JetPack 6.2.3 (Ubuntu 22.04)
   ships 2.35, so even the CPU-only fallback refuses to start there.
 
-A source build needs `cmake`, a C++17 compiler, OpenSSL dev headers (see
-below), and (for CUDA) `nvcc` from the CUDA toolkit already on the host. The
-installer checks for these and, for everything except the CUDA toolkit, can
-install them itself via `sudo apt-get install` -- but only with your
-explicit consent: pass `--allow-apt-install` up front, or answer yes to the
+A source build needs `cmake`, `git`, a C++17 compiler, OpenSSL dev headers,
+and the OpenMP runtime -- plus, per backend, a GPU vendor toolchain: `nvcc`
+for CUDA, `glslc` + Vulkan headers for Vulkan, `hipcc` for ROCm. This list
+isn't guessed from one host's missing package -- it's cross-referenced
+against every Linux job in llama.cpp's own release CI (cpu/cuda/vulkan/rocm),
+intersected with what a native build of just the `llama-server` target
+actually needs (their CI installs several things -- `ninja-build`,
+`python3-venv`, `git-lfs`, `libjpeg-dev` -- for its own portable-build/test
+concerns that don't apply here; confirmed `libjpeg-dev` isn't even a real
+llama.cpp dependency, since image loading goes through the header-only
+`stb_image` instead of libjpeg). See `source_build.py`'s module docstring for
+the full evidence trail.
+
+For everything except a GPU vendor toolchain, the installer can install the
+gap itself via `sudo apt-get install` -- but only with your explicit
+consent: pass `--allow-apt-install` up front, or answer yes to the
 interactive prompt it shows otherwise (that prompt never appears, and nothing
 is auto-installed, without a real terminal to ask through -- e.g. the public
 `curl | bash` one-liner, which has no stdin a person could answer through).
 `sudo`'s own password prompt is untouched either way; this installer only
 ever supplies the package list, never a password. `--no-apt-install` turns
 this off entirely and goes back to just printing the exact `apt-get install`
-line for whatever's missing. The CUDA toolkit itself is never auto-installed
-under any of these flags -- it's a multi-GB, distro-specific install, and on
-Jetson/JetPack it's the vendor-managed OS image, not something this installer
-should touch; a missing `nvcc` always stays an instruction.
+line for whatever's missing. A GPU vendor toolchain is never auto-installed
+under any of these flags -- each is a multi-GB, distro/vendor-specific
+install (on Jetson/JetPack, CUDA specifically is the vendor-managed OS image,
+not something this installer should touch); a missing `nvcc`/`glslc`/`hipcc`
+always stays an instruction.
 
-**One easy-to-miss gap if you install these yourself ahead of time:** llama.cpp's
-HTTPS support (used by `-hf` and `--cache-list` -- i.e. this project's own
-`pull`/`list` commands) needs OpenSSL dev headers (`libssl-dev` on
-Debian/Ubuntu) at build time. Missing them does **not** fail the build --
-`cmake` configures successfully and only fails later, at runtime, the first
-time something tries to download a model. The installer's preflight check
-catches this before ever starting a build that can otherwise take well over
-an hour on a low-power board.
+**Two easy-to-miss gaps if you install these yourself ahead of time, both the
+same shape:** a plain, non-`REQUIRED` `find_package(...)` in llama.cpp's own
+CMake that degrades **silently** -- configure still succeeds -- rather than
+failing loud.
+
+- HTTPS support (used by `-hf` and `--cache-list` -- i.e. this project's own
+  `pull`/`list` commands) needs OpenSSL dev headers (`libssl-dev` on
+  Debian/Ubuntu). Missing them doesn't fail the build; it only fails later,
+  at runtime, the first time something tries to download a model.
+- OpenMP multi-threading on the CPU backend needs the OpenMP runtime
+  (`libgomp1` on Debian/Ubuntu). Missing it doesn't fail the build either --
+  just a `message(WARNING "OpenMP not found")` buried in build output, and
+  the binary silently falls back to single-threaded CPU inference, no error,
+  just much slower than it should be.
+
+The installer's preflight check catches both before ever starting a build
+that can otherwise take well over an hour on a low-power board.
 
 A from-source build is slow and memory-hungry (`--jobs` defaults to a
 conservative estimate based on available RAM, since a naive `-j$(nproc)` can
