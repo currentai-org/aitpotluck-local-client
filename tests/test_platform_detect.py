@@ -81,6 +81,94 @@ class TestDetectGpuBackend:
         assert pd.detect_gpu_backend("linux", "x64", "auto") == "cpu"
 
 
+class TestDetectGlibcVersion:
+    def test_parses_major_minor(self, monkeypatch):
+        monkeypatch.setattr(pd.platform, "libc_ver", lambda: ("glibc", "2.35"))
+        assert pd.detect_glibc_version() == (2, 35)
+
+    def test_parses_a_patch_suffix(self, monkeypatch):
+        # Some distros report a third component; only major.minor is ever compared.
+        monkeypatch.setattr(pd.platform, "libc_ver", lambda: ("glibc", "2.38.1"))
+        assert pd.detect_glibc_version() == (2, 38)
+
+    def test_non_glibc_libc_is_unknown(self, monkeypatch):
+        # macOS/Windows/musl all report something other than "glibc" here.
+        monkeypatch.setattr(pd.platform, "libc_ver", lambda: ("", ""))
+        assert pd.detect_glibc_version() is None
+
+    def test_unparseable_version_is_unknown_not_a_crash(self, monkeypatch):
+        monkeypatch.setattr(pd.platform, "libc_ver", lambda: ("glibc", "weird"))
+        assert pd.detect_glibc_version() is None
+
+
+class TestGlibcSatisfies:
+    def test_no_floor_recorded_is_always_satisfied(self):
+        assert pd.glibc_satisfies(None, (2, 30)) is True
+
+    def test_unknown_host_is_never_blocked(self):
+        # We can't prove the host is too old, so don't force a source build off a guess.
+        assert pd.glibc_satisfies("2.38", None) is True
+
+    def test_host_meets_floor_exactly(self):
+        assert pd.glibc_satisfies("2.38", (2, 38)) is True
+
+    def test_host_exceeds_floor(self):
+        assert pd.glibc_satisfies("2.34", (2, 39)) is True
+
+    def test_host_below_floor_fails(self):
+        # The confirmed real case: JetPack 6.2.3's glibc 2.35 against the b10989 arm64 asset's 2.38.
+        assert pd.glibc_satisfies("2.38", (2, 35)) is False
+
+    def test_major_version_dominates_minor(self):
+        assert pd.glibc_satisfies("2.38", (3, 0)) is True
+        assert pd.glibc_satisfies("3.5", (2, 40)) is False
+
+
+class TestDetectCudaComputeCapability:
+    def test_no_nvidia_smi_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(pd, "_has_cmd", lambda name: False)
+        assert pd.detect_cuda_compute_capability() is None
+
+    def test_parses_real_csv_noheader_output(self, monkeypatch):
+        monkeypatch.setattr(pd, "_has_cmd", lambda name: name == "nvidia-smi")
+
+        class _Result:
+            returncode = 0
+            stdout = "8.7, Orin (nvgpu)\n"
+
+        monkeypatch.setattr(pd.subprocess, "run", lambda *a, **k: _Result())
+        assert pd.detect_cuda_compute_capability() == "8.7"
+
+    def test_nonzero_exit_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(pd, "_has_cmd", lambda name: name == "nvidia-smi")
+
+        class _Result:
+            returncode = 1
+            stdout = ""
+
+        monkeypatch.setattr(pd.subprocess, "run", lambda *a, **k: _Result())
+        assert pd.detect_cuda_compute_capability() is None
+
+    def test_timeout_is_unknown_not_a_crash(self, monkeypatch):
+        monkeypatch.setattr(pd, "_has_cmd", lambda name: name == "nvidia-smi")
+
+        def _raise(*a, **k):
+            raise pd.subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=5)
+
+        monkeypatch.setattr(pd.subprocess, "run", _raise)
+        assert pd.detect_cuda_compute_capability() is None
+
+    def test_unparseable_output_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(pd, "_has_cmd", lambda name: name == "nvidia-smi")
+
+        class _Result:
+            returncode = 0
+            stdout = "[N/A]\n"
+
+        monkeypatch.setattr(pd.subprocess, "run", lambda *a, **k: _Result())
+        assert pd.detect_cuda_compute_capability() is None
+
+
 class TestDetectHostProfile:
     def test_combines_os_arch_backend(self, monkeypatch):
         monkeypatch.setattr(pd, "detect_os", lambda: "linux")

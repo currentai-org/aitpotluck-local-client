@@ -5,11 +5,13 @@
   "assets": {
     "linux-x64-cpu": {
       "file": "llama-b10989-bin-ubuntu-x64.tar.gz",
-      "sha256": "1ecee35e35285eac87be4135a5910be93c1148f157beaca947a0e2bf0ced75f1"
+      "sha256": "1ecee35e35285eac87be4135a5910be93c1148f157beaca947a0e2bf0ced75f1",
+      "min_glibc": "2.34"
     },
     "linux-arm64-cpu": {
       "file": "llama-b10989-bin-ubuntu-arm64.tar.gz",
-      "sha256": "524cd470bedc11381f703456b71d9b8852eabf5a3c73693e8c30af885f2464fd"
+      "sha256": "524cd470bedc11381f703456b71d9b8852eabf5a3c73693e8c30af885f2464fd",
+      "min_glibc": "2.38"
     },
     "linux-x64-cuda": {
       "file": "llama-b10989-bin-ubuntu-cuda-12.8-x64.tar.gz",
@@ -47,6 +49,16 @@
   "notes": {
     "macos": "Metal acceleration is built into the standard macOS asset -- no separate GPU variant needed.",
     "windows_gpu": "windows-x64-cuda / windows-x64-vulkan asset entries can be added the same way when GPU support is validated on Windows; stubbed out in platform_detect.py for now.",
-    "linux_arm64_cuda_note": "No linux-arm64-cuda asset validated yet (Jetson-class only); falls back to linux-arm64-cpu."
+    "linux_arm64_cuda_note": "No linux-arm64-cuda asset published upstream at all (Jetson-class boards are the only real-world arm64+CUDA host) -- source_build.py builds llama-server from vendor/llama.cpp instead of falling back to linux-arm64-cpu, which would silently throw away the GPU.",
+    "min_glibc": "llama.cpp's own release CI builds Linux arm64 assets against a newer base image than most arm64 boards actually run -- confirmed live 2026-09-23: the b10989 linux-arm64-cpu asset needs glibc 2.38 (via its GLIBC_* symbol versions, `objdump -T llama-server | grep GLIBC_`), which JetPack 6.2.3 / Ubuntu 22.04 (glibc 2.35) does not have, so even the CPU-only asset fails to start there (not just the missing CUDA asset). The x64-cpu asset only needs glibc 2.34, so this mostly bites arm64. Not re-verified per release bump -- re-check with the same objdump command whenever `tag` changes, since the CI base image is upstream's choice, not ours."
+  },
+  "source_build": {
+    "_comment": "Used when platform_detect.resolve_install_strategy (aipotluck/installer/build_strategy.py) decides no viable prebuilt asset exists for this host -- builds llama-server from the pinned tag checked out into vendor/llama.cpp instead. Confirmed viable on a real Jetson Orin Nano (JetPack 6.2.3): a manually-built llama-server there already links libggml-cuda.so against the JetPack-bundled CUDA 12.6 toolkit at CMAKE_CUDA_ARCHITECTURES=87.",
+    "required_tools": ["cmake", "a C++17 compiler (g++/clang++)", "git"],
+    "cuda_required_tools": ["nvcc (from the JetPack/CUDA toolkit, e.g. /usr/local/cuda/bin/nvcc)"],
+    "apt_packages_ubuntu_debian": ["cmake", "build-essential", "libssl-dev"],
+    "apt_packages_note": "libssl-dev is easy to miss and does NOT fail the cmake configure step -- llama.cpp's HTTPS support (LLAMA_OPENSSL, needed for the -hf model downloader and --cache-list our pull/list commands depend on) does a plain, non-REQUIRED find_package(OpenSSL) and silently compiles without HTTPS if the dev headers aren't present, so a build can succeed and only fail later at runtime with 'HTTPS is not supported'. source_build.py checks for the header before ever starting cmake, specifically to avoid burning a 30-90 minute build on a binary with this silently missing.",
+    "min_free_disk_gb": 6,
+    "default_build_timeout_seconds": 5400
   }
 }

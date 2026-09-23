@@ -100,3 +100,55 @@ def detect_host_profile(requested_backend: str = "auto") -> HostProfile:
     arch = detect_arch()
     backend = detect_gpu_backend(os_name, arch, requested_backend)
     return HostProfile(os_name=os_name, arch=arch, backend=backend)
+
+
+def detect_glibc_version() -> tuple[int, int] | None:
+    """(major, minor) of the host's glibc, or None -- not glibc (musl, macOS, Windows) or the
+    version string didn't parse. Never raises; callers must treat None as "unknown, don't block
+    on it" rather than "definitely incompatible"."""
+    lib, ver = platform.libc_ver()
+    if lib != "glibc" or not ver:
+        return None
+    parts = ver.split(".")
+    try:
+        return int(parts[0]), int(parts[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def glibc_satisfies(min_glibc: str | None, host_glibc: tuple[int, int] | None) -> bool:
+    """True unless we can PROVE the host's glibc is older than min_glibc. Either side being
+    unknown (no floor recorded, or host isn't glibc-based / couldn't be read) means "don't block" --
+    this check exists to catch a real, confirmed failure mode (llama.cpp's published arm64 Linux
+    release asset needs glibc 2.38; JetPack 6.2.3 / Ubuntu 22.04 ships 2.35 and the binary won't
+    even start), not to invent a new one out of a probe we can't complete."""
+    if min_glibc is None or host_glibc is None:
+        return True
+    major_str, minor_str = min_glibc.split(".")
+    return host_glibc >= (int(major_str), int(minor_str))
+
+
+def detect_cuda_compute_capability() -> str | None:
+    """The running NVIDIA GPU's compute capability as "M.m" (e.g. "8.7" on Jetson Orin, "8.9" on
+    an RTX 4090), or None if nvidia-smi is absent/fails/unparseable. This is deliberately a
+    separate, more detailed probe than detect_gpu_backend's plain "is cuda usable at all" check --
+    it's only needed when a source build must pick a CMAKE_CUDA_ARCHITECTURES value, which a
+    prebuilt-asset install never has to do."""
+    if not _has_cmd("nvidia-smi"):
+        return None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    value = lines[0].split(",")[0].strip()
+    if "." not in value:
+        return None
+    return value
