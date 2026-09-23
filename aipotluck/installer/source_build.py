@@ -75,24 +75,81 @@ def _has_openssl_headers() -> bool:
     return False
 
 
+_APT_PACKAGE_PROBLEMS = {
+    "cmake": "cmake not found",
+    "git": "git not found",
+    "build-essential": "no C++ compiler found",
+    "libssl-dev": (
+        "OpenSSL development headers not found -- llama-server's -hf downloader and "
+        "--cache-list (this CLI's pull/list commands) compile out silently without them, with "
+        "no build error, only a later runtime one"
+    ),
+}
+
+
+def missing_apt_packages() -> list[str]:
+    """The subset of build gaps a single `apt-get install` can actually fix -- cmake, git, a C++
+    compiler, OpenSSL headers. Deliberately excludes the CUDA toolkit (nvcc): that's not a small,
+    safe auto-install -- it's a multi-GB toolkit, its package name differs per distro, and on
+    Jetson/JetPack it's the vendor-managed OS image, not something this installer should ever
+    touch. A missing nvcc always stays an instruction, never something install_apt_packages
+    installs, no matter how apt-install is invoked."""
+    packages = []
+    if shutil.which("cmake") is None:
+        packages.append("cmake")
+    if shutil.which("git") is None:
+        packages.append("git")
+    if _find_cxx_compiler() is None:
+        packages.append("build-essential")
+    if not _has_openssl_headers():
+        packages.append("libssl-dev")
+    return packages
+
+
+def has_apt() -> bool:
+    return shutil.which("apt-get") is not None
+
+
+class AptInstallError(BuildError):
+    pass
+
+
+def install_apt_packages(packages: list[str], *, timeout: float = 300) -> None:
+    """Install `packages` via `sudo apt-get update && sudo apt-get install -y <packages>`, with
+    stdin/stdout/stderr all left inherited from this process (never captured or redirected) --
+    `sudo` itself talks to the controlling terminal directly to prompt for a password, and apt's
+    own progress should be visible the same way a long build's is. Only ever called after the
+    caller has gotten explicit consent (install.py's --allow-apt-install flag or an interactive
+    prompt) -- this function itself does not ask, so it must never be wired to run unconditionally.
+    """
+    if not packages:
+        return
+    log.info("Installing missing build dependencies via apt: %s", " ".join(packages))
+    try:
+        update = subprocess.run(["sudo", "apt-get", "update"], timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AptInstallError(f"'sudo apt-get update' did not run: {exc}") from exc
+    if update.returncode != 0:
+        raise AptInstallError(f"'sudo apt-get update' failed (exit {update.returncode})")
+    try:
+        install = subprocess.run(["sudo", "apt-get", "install", "-y", *packages], timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AptInstallError(f"'sudo apt-get install' did not run: {exc}") from exc
+    if install.returncode != 0:
+        raise AptInstallError(
+            f"'sudo apt-get install -y {' '.join(packages)}' failed (exit {install.returncode})"
+        )
+
+
 def check_build_prerequisites(*, want_cuda: bool) -> list[str]:
     """Return a list of human-readable problems; empty means the host is ready to build. Every
-    entry names both the gap and the exact fix (never just "cmake missing") -- the caller must
-    print these and stop, not attempt to resolve them itself, since fixing most of them needs
-    `sudo apt-get install`, and this installer never invokes sudo on the caller's behalf."""
-    problems: list[str] = []
-    if shutil.which("cmake") is None:
-        problems.append("cmake not found (sudo apt-get install -y cmake)")
-    if shutil.which("git") is None:
-        problems.append("git not found (sudo apt-get install -y git)")
-    if _find_cxx_compiler() is None:
-        problems.append("no C++ compiler found (sudo apt-get install -y build-essential)")
-    if not _has_openssl_headers():
-        problems.append(
-            "OpenSSL development headers not found -- llama-server's -hf downloader and "
-            "--cache-list (this CLI's pull/list commands) compile out silently without them, with "
-            "no build error, only a later runtime one (sudo apt-get install -y libssl-dev)"
-        )
+    entry names both the gap and the exact fix (never just "cmake missing") -- for the
+    apt-fixable ones (see missing_apt_packages), the caller may offer to fix them automatically
+    with explicit consent; nvcc never gets that treatment, see missing_apt_packages' docstring."""
+    problems = [
+        f"{_APT_PACKAGE_PROBLEMS[pkg]} (sudo apt-get install -y {pkg})"
+        for pkg in missing_apt_packages()
+    ]
     if want_cuda and find_nvcc() is None:
         problems.append(
             "nvcc not found -- CUDA was detected (nvidia-smi works) but the CUDA toolkit compiler "
@@ -176,10 +233,17 @@ def _configure(source_dir: Path, build_dir: Path, *, cuda_arch: str | None, cmak
     args = [
         cmake_binary, "-S", str(source_dir), "-B", str(build_dir),
         "-DCMAKE_BUILD_TYPE=Release",
+        # LLAMA_BUILD_TOOLS must stay ON: the llama-server target itself lives under tools/server,
+        # and the top-level CMakeLists only ever does add_subdirectory(tools) -- which is what
+        # actually defines the "llama-server" target `cmake --build --target llama-server` asks
+        # for -- when LLAMA_BUILD_TOOLS is on. LLAMA_BUILD_SERVER alone (tools/CMakeLists.txt's own
+        # gate one level down) is never even evaluated otherwise. Confirmed live on the reference
+        # Jetson: turning LLAMA_BUILD_TOOLS off (to shrink the build, on the wrong assumption that
+        # it was independent of the server) configured fine but failed the actual build with
+        # "No rule to make target 'llama-server'" -- the target had never been defined at all.
         "-DLLAMA_BUILD_SERVER=ON",
         "-DLLAMA_BUILD_TESTS=OFF",
         "-DLLAMA_BUILD_EXAMPLES=OFF",
-        "-DLLAMA_BUILD_TOOLS=OFF",
         "-DLLAMA_OPENSSL=ON",
     ]
     if cuda_arch:
