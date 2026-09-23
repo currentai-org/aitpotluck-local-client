@@ -43,7 +43,7 @@ from aipotluck.service.newt_supervisor import NewtSupervisor  # noqa: E402
 
 SERVICE_NAME = "aipotluck"
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765  # distinct from llama-server's own default port 8080
+DEFAULT_PORT = 8069  # distinct from llama-server's own default port 8080
 
 log = logging.getLogger("aipotluck.service")
 
