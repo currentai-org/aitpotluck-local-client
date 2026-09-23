@@ -42,17 +42,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# --- REPLACE THIS once the repo is hosted publicly ---
-$DefaultRepoUrl = "https://github.com/REPLACE_ME/aipotluck-local-client.git"
+$DefaultRepoUrl = "https://github.com/currentai-org/aitpotluck-local-client.git"
 
 $repoUrl = if ($RepoUrl) { $RepoUrl } elseif ($env:AIPOTLUCK_REPO_URL) { $env:AIPOTLUCK_REPO_URL } else { $DefaultRepoUrl }
 $ref = if ($Ref) { $Ref } elseif ($env:AIPOTLUCK_REF) { $env:AIPOTLUCK_REF } else { "main" }
 $srcDir = if ($SrcDir) { $SrcDir } elseif ($env:AIPOTLUCK_SRC_DIR) { $env:AIPOTLUCK_SRC_DIR } else { Join-Path $env:LOCALAPPDATA "aipotluck\src" }
-
-if ($repoUrl -like "*REPLACE_ME*") {
-    Write-Error "This script's default repo URL is still a placeholder. Pass -RepoUrl <git-url>, set AIPOTLUCK_REPO_URL, or edit `$DefaultRepoUrl in this script before publishing/using it."
-    exit 1
-}
 
 function Find-Git {
     $found = Get-Command git -ErrorAction SilentlyContinue

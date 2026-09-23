@@ -35,46 +35,42 @@ only the OS-native "keep this process running" registration differs
 
 Linux / macOS:
 ```bash
-git clone --recurse-submodules <this-repo>
-cd aipotluck-local-client
+git clone --recurse-submodules https://github.com/currentai-org/aitpotluck-local-client.git
+cd aitpotluck-local-client
 python3 -m aipotluck.installer.install --backend auto
 ```
 
 Windows (no prerequisites, installs Python itself if missing):
 ```powershell
-git clone --recurse-submodules <this-repo>
-cd aipotluck-local-client
+git clone --recurse-submodules https://github.com/currentai-org/aitpotluck-local-client.git
+cd aitpotluck-local-client
 powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
 ```
 
-## One-line public installer (once this repo is hosted publicly)
+## One-line public installer
 
 `install.sh` (Linux/macOS) and `install.ps1` (Windows) at the repo root are
 thin bootstrap wrappers meant to be posted publicly and piped straight into
-a shell -- no manual `git clone` step required. **They currently ship with
-a placeholder repo URL** (`REPLACE_ME`) and refuse to run until that's
-replaced with the real hosted URL, or overridden via environment
-variable/parameter. Once the repo has a public home (e.g. pushed to
-GitHub), usage looks like:
+a shell -- no manual `git clone` step required:
 
 ```bash
 # Linux / macOS -- standard practice for this kind of installer: no arguments needed.
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.sh | bash
 
 # advanced use only -- installer flags, passed straight through:
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | bash -s -- --backend cuda --model-hf "org/repo:Q4_K_M"
+curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.sh | bash -s -- --backend cuda --model-hf "org/repo:Q4_K_M"
 
-# pointing at a fork/branch instead of editing the script:
-AIPOTLUCK_REPO_URL=https://github.com/<owner>/<repo>.git AIPOTLUCK_REF=main \
-  curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/install.sh | bash
+# pointing at a fork/branch instead of the default:
+AIPOTLUCK_REPO_URL=https://github.com/<owner>/<fork>.git AIPOTLUCK_REF=main \
+  curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.sh | bash
 ```
 
 ```powershell
 # Windows, no arguments:
-irm https://raw.githubusercontent.com/<owner>/<repo>/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.ps1 | iex
 
 # Windows, with arguments (irm|iex can't take params directly, use this form):
-$script = irm https://raw.githubusercontent.com/<owner>/<repo>/main/install.ps1
+$script = irm https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.ps1
 Invoke-Expression "& { $script } -Backend cuda -System"
 ```
 
@@ -95,11 +91,6 @@ checkout (`git fetch` + `reset --hard`) rather than re-cloning.
 **The install always finishes in a "logged out" state** -- no Pangolin
 credentials, and the service holds `llama-server` and the tunnel back until
 you pair the device. See "Pairing" below.
-
-To actually publish this: push the repo to its public home, then replace
-`REPLACE_ME` in both `install.sh` (`DEFAULT_REPO_URL`) and `install.ps1`
-(`$DefaultRepoUrl`) with the real clone URL, and swap `<owner>/<repo>` in
-the raw.githubusercontent.com URLs above.
 
 ## Installer options
 

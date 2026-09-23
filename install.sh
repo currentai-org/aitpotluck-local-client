@@ -38,9 +38,7 @@
 
 set -euo pipefail
 
-# --- REPLACE THIS once the repo is hosted publicly ---
-# e.g. https://github.com/your-org/aipotluck-local-client.git
-DEFAULT_REPO_URL="https://github.com/REPLACE_ME/aipotluck-local-client.git"
+DEFAULT_REPO_URL="https://github.com/currentai-org/aitpotluck-local-client.git"
 
 REPO_URL="${AIPOTLUCK_REPO_URL:-$DEFAULT_REPO_URL}"
 REF="${AIPOTLUCK_REF:-main}"
@@ -49,10 +47,6 @@ SRC_DIR="${AIPOTLUCK_SRC_DIR:-$HOME/.aipotluck/src}"
 log() { printf '\033[1;34m[aipotluck]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[aipotluck] WARNING:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[aipotluck] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
-
-if [[ "$REPO_URL" == *REPLACE_ME* ]]; then
-    die "This script's default repo URL is still a placeholder. Set AIPOTLUCK_REPO_URL=<git-url> or edit DEFAULT_REPO_URL in this script before publishing/using it."
-fi
 
 # sudo prompts for a password via the controlling terminal (/dev/tty), not stdin -- so this still
 # works interactively even when this whole script arrived through a `curl | bash` pipe. Skip the

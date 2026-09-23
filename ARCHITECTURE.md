@@ -371,12 +371,10 @@ and piped into a shell (`curl ... | bash`, `irm ... | iex`):
   into `%LOCALAPPDATA%\aipotluck\src`, then hands off to
   `packaging/windows/install.ps1` (the one that finds-or-installs Python).
 
-Both scripts contain a placeholder repo URL (`REPLACE_ME`) and refuse to
-run until it's replaced with the real public clone URL or overridden via
-`AIPOTLUCK_REPO_URL` -- there is no hosted URL yet for this project, so
-this is documented as a manual step for whoever publishes it (see
-README.md's "One-line public installer" section for exact end-user
-usage once that happens).
+Both scripts default to the real public clone URL
+(`https://github.com/currentai-org/aitpotluck-local-client.git`), overridable via
+`AIPOTLUCK_REPO_URL` for a fork or a local mirror -- see README.md's "One-line
+public installer" section for exact end-user usage.
 
 No installer logic is duplicated in either bootstrap script -- both are
 strictly "get the source, then call the already-tested installer,"
