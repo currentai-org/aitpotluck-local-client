@@ -184,6 +184,34 @@ class TestBuildLlamaServer:
         assert "-DGGML_CUDA=ON" in marker
         assert "-DCMAKE_CUDA_ARCHITECTURES=87" in marker
 
+    def test_cuda_build_passes_the_located_nvcc_path_to_cmake(self, tmp_path, fake_cmake, monkeypatch):
+        # Regression: cmake's own CUDA-compiler detection only searches PATH. Confirmed live on
+        # the reference Jetson that nvcc is real but not on PATH (find_nvcc()'s glob fallback is
+        # the only reason it was found at all) -- without threading that path through explicitly,
+        # configure fails with CMAKE_CUDA_COMPILER-NOTFOUND despite find_nvcc() succeeding.
+        monkeypatch.setattr(sb, "find_nvcc", lambda: Path("/usr/local/cuda-12.6/bin/nvcc"))
+        source_dir = tmp_path / "src"
+        build_dir = tmp_path / "build"
+        source_dir.mkdir()
+        sb.build_llama_server(
+            source_dir, build_dir, fingerprint="x", cuda_arch="87", cmake_binary=str(fake_cmake),
+        )
+        marker = (build_dir / "configured.marker").read_text(encoding="utf-8")
+        assert "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.6/bin/nvcc" in marker
+
+    def test_cuda_build_with_undiscoverable_nvcc_omits_the_compiler_flag(self, tmp_path, fake_cmake, monkeypatch):
+        # Shouldn't happen in practice (check_build_prerequisites gates this earlier), but must
+        # never pass a bogus/empty -DCMAKE_CUDA_COMPILER= if find_nvcc() ever comes back None here.
+        monkeypatch.setattr(sb, "find_nvcc", lambda: None)
+        source_dir = tmp_path / "src"
+        build_dir = tmp_path / "build"
+        source_dir.mkdir()
+        sb.build_llama_server(
+            source_dir, build_dir, fingerprint="x", cuda_arch="87", cmake_binary=str(fake_cmake),
+        )
+        marker = (build_dir / "configured.marker").read_text(encoding="utf-8")
+        assert "CMAKE_CUDA_COMPILER" not in marker
+
     def test_cpu_only_build_does_not_pass_cuda_flags(self, tmp_path, fake_cmake):
         source_dir = tmp_path / "src"
         build_dir = tmp_path / "build"

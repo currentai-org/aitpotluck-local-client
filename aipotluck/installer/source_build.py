@@ -184,6 +184,15 @@ def _configure(source_dir: Path, build_dir: Path, *, cuda_arch: str | None, cmak
     ]
     if cuda_arch:
         args += ["-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}"]
+        # cmake's own CUDA-language detection only searches PATH -- confirmed live on the
+        # reference Jetson: nvcc is genuinely installed but not on PATH there (it's under
+        # /usr/local/cuda-12.6/bin), find_nvcc()'s glob fallback locates it fine, but without this
+        # flag cmake still fails with CMAKE_CUDA_COMPILER-NOTFOUND. Always pass it when we have it
+        # rather than only as a fallback -- it's strictly more robust than letting cmake redo a
+        # weaker version of the same search.
+        nvcc = find_nvcc()
+        if nvcc:
+            args += [f"-DCMAKE_CUDA_COMPILER={nvcc}"]
     log.info("Configuring: %s", " ".join(args))
     _run(args, timeout=300)
 
