@@ -131,6 +131,9 @@ The Python installer's flags (the PowerShell wrapper exposes the equivalent
 --jobs N               Parallel build jobs for a from-source build (default:
                        auto, capped by available RAM)
 --build-timeout SECS   Wall-clock ceiling for a from-source build (default: 5400)
+--allow-apt-install    Consent up front to installing missing build deps via
+                       'sudo apt-get install' (skips the interactive y/N prompt)
+--no-apt-install       Never offer to auto-install build deps, even interactively
 -v / --verbose
 ```
 
@@ -156,12 +159,21 @@ Two concrete cases this covers today:
   `linux-arm64-cpu` asset needs glibc 2.38; JetPack 6.2.3 (Ubuntu 22.04)
   ships 2.35, so even the CPU-only fallback refuses to start there.
 
-A source build needs `cmake`, a C++17 compiler, and (for CUDA) `nvcc` from
-the CUDA toolkit already on the host -- the installer checks for these (plus
-OpenSSL dev headers, see below) and refuses with an exact `apt-get install`
-line for whatever's missing, rather than trying to `sudo apt-get install`
-anything itself (many hosts, including the reference Jetson, need an
-interactive sudo password, which a non-interactive install can't supply).
+A source build needs `cmake`, a C++17 compiler, OpenSSL dev headers (see
+below), and (for CUDA) `nvcc` from the CUDA toolkit already on the host. The
+installer checks for these and, for everything except the CUDA toolkit, can
+install them itself via `sudo apt-get install` -- but only with your
+explicit consent: pass `--allow-apt-install` up front, or answer yes to the
+interactive prompt it shows otherwise (that prompt never appears, and nothing
+is auto-installed, without a real terminal to ask through -- e.g. the public
+`curl | bash` one-liner, which has no stdin a person could answer through).
+`sudo`'s own password prompt is untouched either way; this installer only
+ever supplies the package list, never a password. `--no-apt-install` turns
+this off entirely and goes back to just printing the exact `apt-get install`
+line for whatever's missing. The CUDA toolkit itself is never auto-installed
+under any of these flags -- it's a multi-GB, distro-specific install, and on
+Jetson/JetPack it's the vendor-managed OS image, not something this installer
+should touch; a missing `nvcc` always stays an instruction.
 
 **One easy-to-miss gap if you install these yourself ahead of time:** llama.cpp's
 HTTPS support (used by `-hf` and `--cache-list` -- i.e. this project's own
