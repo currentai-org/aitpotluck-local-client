@@ -1,0 +1,86 @@
+"""aipotluck.installer.cli's argument parser.
+
+The regression this file exists to guard: --install-dir/--system/-v used to be declared on both
+the top-level parser and each subparser (via a shared `parents=[...]`), and argparse's subparsers
+action silently discards the outer parser's value in that setup -- `--install-dir X login` would
+parse without error but `args.install_dir` would come back None, not X. See cli.py's
+`_common_args_parser` docstring for the full mechanism. These tests pin the fixed behavior (flags
+only recognized after the subcommand) so nobody "fixes" it back by re-adding the shared parents.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from aipotluck.installer.cli import build_arg_parser
+
+
+class TestInstallDirPlacement:
+    def test_after_subcommand_is_honored(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["status", "--install-dir", "/tmp/somewhere"])
+        assert args.install_dir == Path("/tmp/somewhere")
+
+    def test_before_subcommand_is_rejected_not_silently_ignored(self):
+        # The critical regression case: this must fail loudly (SystemExit from argparse's usage
+        # error), never succeed with install_dir silently reset to the default.
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--install-dir", "/tmp/somewhere", "status"])
+
+    @pytest.mark.parametrize("command", ["login", "logout", "status"])
+    def test_every_subcommand_accepts_install_dir_after_itself(self, command):
+        parser = build_arg_parser()
+        args = parser.parse_args([command, "--install-dir", "/tmp/x"])
+        assert args.install_dir == Path("/tmp/x")
+
+
+class TestSystemAndVerboseFlags:
+    def test_system_flag_defaults_false(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["status"])
+        assert args.system is False
+        assert args.verbose is False
+
+    def test_system_and_verbose_after_subcommand(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["logout", "--system", "-v"])
+        assert args.system is True
+        assert args.verbose is True
+
+
+class TestCommandRequired:
+    def test_no_subcommand_is_an_error(self):
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([])
+
+    def test_unknown_subcommand_is_an_error(self):
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["reboot"])
+
+
+class TestLoginTunnelFlags:
+    def test_all_three_tunnel_flags_parse_together(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(
+            ["login", "--tunnel-id", "abc", "--tunnel-secret", "def", "--tunnel-endpoint", "http://x"]
+        )
+        assert (args.tunnel_id, args.tunnel_secret, args.tunnel_endpoint) == ("abc", "def", "http://x")
+
+    def test_tunnel_flags_default_to_none_for_interactive_prompt(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["login"])
+        assert args.tunnel_id is None
+        assert args.tunnel_secret is None
+        assert args.tunnel_endpoint is None
+
+    def test_logout_and_status_have_no_tunnel_flags(self):
+        parser = build_arg_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["logout", "--tunnel-id", "abc"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["status", "--tunnel-id", "abc"])

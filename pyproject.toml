@@ -22,3 +22,7 @@ include = ["aipotluck*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.ps1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

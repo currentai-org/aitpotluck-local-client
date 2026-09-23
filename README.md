@@ -198,6 +198,29 @@ writes to a machine-wide location that's normally already on PATH
 (`/usr/local/bin`) or prints the manual step to add it (Windows, since
 that needs elevation this process may not have).
 
+## Tests
+
+```bash
+pip install -e ".[dev]"    # or: pip install --user pytest
+pytest
+```
+
+Unit tests only -- no real network, no real systemd/launchd, no real subprocess. Every OS/network/
+service-manager boundary (`fetch`/`newt_fetch`, `get_service_manager`, `LlamaSupervisor`/
+`NewtSupervisor`, `urllib.request.urlopen`) is mocked or swapped for a lightweight fake; only real
+filesystem writes happen, always rooted under pytest's own `tmp_path` -- the suite never touches
+the actual per-OS install locations (`~/.local/bin`, `~/.config/aipotluck`, a real systemd unit,
+etc.). Covers `platform_detect.py`, `layout.py`, `cli.py` (including the argparse regression --
+see `test_cli_argparse.py`'s docstring), `cli_shim.py`, `install.py`'s `--no-service` and real
+install paths, and `service/runner.py`'s login-gating and `/status` secret redaction.
+
+Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
+`windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
+checksum+extract path in `fetch.py`/`newt_fetch.py`. Both need a real OS service manager or real
+network access respectively to verify meaningfully; see this repo's own `ARCHITECTURE.md` for how
+those were verified by hand instead (real installs, real `systemctl`/`launchctl`, a real model
+download and inference request).
+
 ## Repo layout
 
 ```
@@ -232,5 +255,6 @@ aipotluck/                      the root package everything below lives under
 packaging/
   windows/install.ps1             Windows bootstrapper (installs Python if missing, then installs)
   windows|macos|linux/README.md   per-OS implementation notes
+tests/                            unit tests -- see "Tests" above
 ARCHITECTURE.md                  full design doc
 ```
