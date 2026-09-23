@@ -61,12 +61,12 @@ class ServiceManager(ABC):
 
 def get_service_manager(os_name: str) -> ServiceManager:
     if os_name == "linux":
-        from installer.service.systemd import SystemdServiceManager
+        from aipotluck.installer.service.systemd import SystemdServiceManager
         return SystemdServiceManager()
     if os_name == "macos":
-        from installer.service.launchd import LaunchdServiceManager
+        from aipotluck.installer.service.launchd import LaunchdServiceManager
         return LaunchdServiceManager()
     if os_name == "windows":
-        from installer.service.windows_service import WindowsServiceManager
+        from aipotluck.installer.service.windows_service import WindowsServiceManager
         return WindowsServiceManager()
     raise ValueError(f"No service manager for os_name={os_name!r}")

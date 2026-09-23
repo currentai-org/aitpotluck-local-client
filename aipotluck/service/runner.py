@@ -3,20 +3,23 @@
 This module contains zero OS-specific code (no signal handling, no service
 framework imports) so the exact same logic runs under:
 
-- Linux:   systemd unit invokes service/aipotluck_service.py directly
-- macOS:   launchd invokes service/aipotluck_service.py directly
-- Windows: schtasks (no-admin) invokes service/aipotluck_service.py directly;
+- Linux:   systemd unit invokes aipotluck/service/aipotluck_service.py directly
+- macOS:   launchd invokes aipotluck/service/aipotluck_service.py directly
+- Windows: schtasks (no-admin) invokes aipotluck/service/aipotluck_service.py directly;
            the --system pywin32 Windows Service
-           (service/windows_service_host.py) imports AipotluckServiceRunner
+           (aipotluck/service/windows_service_host.py) imports AipotluckServiceRunner
            and drives start()/stop() from SvcDoRun/SvcStop instead of a
            signal handler.
 
 AipotluckServiceRunner owns:
   - the HTTP status server (GET /healthz, GET /status)
   - the LlamaSupervisor lifecycle (start on run, stop on shutdown)
-  - the NewtSupervisor lifecycle, CUR-1266 (same as above, but optional --
-    only present once runtime.json has a "tunnel" section, i.e. the device
-    has been paired to a managed inference endpoint)
+  - the NewtSupervisor lifecycle (same as above)
+
+Both supervisors are gated on runtime.json's "logged_in" flag: every fresh install starts logged
+out (no Pangolin credentials), and neither llama-server nor the tunnel is started until
+`aipotluck-local-client login` sets logged_in true and restarts the service. `logout` reverses it.
+See aipotluck/installer/cli.py.
 
 It exposes start() / stop() / wait() so callers control the lifecycle
 without needing to know how each OS delivers a "please stop" signal.
@@ -31,12 +34,12 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from service.llama_supervisor import LlamaSupervisor  # noqa: E402
-from service.newt_supervisor import NewtSupervisor  # noqa: E402
+from aipotluck.service.llama_supervisor import LlamaSupervisor  # noqa: E402
+from aipotluck.service.newt_supervisor import NewtSupervisor  # noqa: E402
 
 SERVICE_NAME = "aipotluck"
 DEFAULT_HOST = "127.0.0.1"
@@ -101,8 +104,8 @@ def build_supervisor(runtime_config: dict, log_dir: Path | None) -> LlamaSupervi
 
 
 def build_newt_supervisor(runtime_config: dict, log_dir: Path | None) -> NewtSupervisor | None:
-    """CUR-1266: `None` when this install has no `tunnel` section -- fully backward compatible
-    with an existing runtime.json that predates managed-inference pairing."""
+    """`None` when this install has no `tunnel` section -- true for every device until it's paired
+    via `aipotluck-local-client login`, and again after `logout` drops the section."""
     tunnel_cfg = runtime_config.get("tunnel")
     if not tunnel_cfg:
         return None
@@ -140,6 +143,15 @@ class _StatusHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def _redacted_runtime_config(runtime_config: dict) -> dict:
+        """/status is unauthenticated on localhost -- never echo the tunnel secret back out."""
+        if "tunnel" not in runtime_config:
+            return runtime_config
+        sanitized = dict(runtime_config)
+        sanitized["tunnel"] = {**runtime_config["tunnel"], "secret": "<redacted>"}
+        return sanitized
+
     def do_GET(self) -> None:
         if self.path == "/healthz":
             body = b"ok"
@@ -151,15 +163,22 @@ class _StatusHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/status":
+            logged_in = bool(self.runner.runtime_config.get("logged_in"))
             supervisor = self.runner.supervisor
-            llama_info = supervisor.info().__dict__ if supervisor else {"error": "supervisor not started"}
+            if supervisor:
+                llama_info = supervisor.info().__dict__
+            elif logged_in:
+                llama_info = {"error": "supervisor not started"}
+            else:
+                llama_info = None
             newt_supervisor = self.runner.newt_supervisor
             tunnel_info = newt_supervisor.info().__dict__ if newt_supervisor else None
             self._write_json(
                 {
                     "service": SERVICE_NAME,
                     "status": "running",
-                    "runtime_config": self.runner.runtime_config,
+                    "logged_in": logged_in,
+                    "runtime_config": self._redacted_runtime_config(self.runner.runtime_config),
                     "llama_server": llama_info,
                     "tunnel": tunnel_info,
                 }
@@ -197,20 +216,27 @@ class AipotluckServiceRunner:
     def start(self) -> None:
         self.runtime_config = load_runtime_config(self.config_dir)
 
-        self.supervisor = build_supervisor(self.runtime_config, self.log_dir)
-        if self.supervisor:
-            log.info("Starting llama-server supervisor")
-            self.supervisor.start()
-        else:
-            log.error("llama-server supervisor could not be created; service will run without it")
+        # Every fresh install is logged out (aipotluck.installer.install writes "logged_in": false and no
+        # "tunnel" section) -- hold both llama-server and newt back entirely until `python -m
+        # `aipotluck-local-client login` flips this and restarts the service. This is what lets the public
+        # one-line installer take zero arguments: it never needs credentials in hand to finish.
+        if self.runtime_config.get("logged_in"):
+            self.supervisor = build_supervisor(self.runtime_config, self.log_dir)
+            if self.supervisor:
+                log.info("Starting llama-server supervisor")
+                self.supervisor.start()
+            else:
+                log.error("llama-server supervisor could not be created; service will run without it")
 
-        # CUR-1266: optional -- only present once the device has been paired to a managed
-        # endpoint (runtime.json's "tunnel" section, written by `installer.install`'s
-        # --tunnel-id/--tunnel-secret/--tunnel-endpoint flags).
-        self.newt_supervisor = build_newt_supervisor(self.runtime_config, self.log_dir)
-        if self.newt_supervisor:
-            log.info("Starting newt supervisor")
-            self.newt_supervisor.start()
+            self.newt_supervisor = build_newt_supervisor(self.runtime_config, self.log_dir)
+            if self.newt_supervisor:
+                log.info("Starting newt supervisor")
+                self.newt_supervisor.start()
+        else:
+            log.info(
+                "Device is logged out -- llama-server and the tunnel will not start until you run "
+                "`aipotluck-local-client login`."
+            )
 
         runner = self
 

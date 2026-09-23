@@ -9,11 +9,12 @@ This is the exact command invoked by:
 All OS-specific process supervision (auto-restart, run-at-login/boot) is
 handled by those service managers wrapping this single, portable script --
 this file itself contains no OS-specific code. The heavy lifting lives in
-service/runner.py (AipotluckServiceRunner) and service/llama_supervisor.py.
+aipotluck/service/runner.py (AipotluckServiceRunner) and
+aipotluck/service/llama_supervisor.py.
 
 For a real Windows Service (--system, requires elevation), see
-service/windows_service_host.py, which wraps AipotluckServiceRunner in a
-pywin32 ServiceFramework instead of this signal-driven CLI form.
+aipotluck/service/windows_service_host.py, which wraps AipotluckServiceRunner
+in a pywin32 ServiceFramework instead of this signal-driven CLI form.
 """
 
 from __future__ import annotations
@@ -26,11 +27,11 @@ import signal
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from service.runner import DEFAULT_HOST, DEFAULT_PORT, SERVICE_NAME, AipotluckServiceRunner  # noqa: E402
+from aipotluck.service.runner import DEFAULT_HOST, DEFAULT_PORT, SERVICE_NAME, AipotluckServiceRunner  # noqa: E402
 
 log = logging.getLogger("aipotluck.service")
 

@@ -19,7 +19,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from installer.service.base import ServiceManager, ServiceState, ServiceStatus
+from aipotluck.installer.service.base import ServiceManager, ServiceState, ServiceStatus
 
 log = logging.getLogger("aipotluck.installer.service.windows_service")
 
@@ -103,7 +103,7 @@ class WindowsServiceManager(ServiceManager):
         working_dir: Path | None, log_dir: Path | None,
     ) -> None:
         """Registers a real Windows Service via pywin32, delegating to
-        service/windows_service_host.py (an AipotluckWindowsService /
+        aipotluck/service/windows_service_host.py (an AipotluckWindowsService /
         win32serviceutil.ServiceFramework subclass). Requires the pywin32
         package (Windows-only optional dependency) and an elevated (admin)
         process. STUB -- implemented per pywin32 docs, not exercised on

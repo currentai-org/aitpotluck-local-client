@@ -83,20 +83,21 @@ pinned, and offline-repeatable (cache the archive).
 aipotluck-local-client/
   vendor/llama.cpp/            # git submodule, pinned commit
   llama_version.json           # {"tag": "b10989", "assets": {...sha256s...}}
-  installer/
-    __init__.py
-    platform_detect.py         # os, arch, gpu-backend probing
-    fetch.py                   # download+checksum+extract release asset
-    layout.py                  # where things live on disk per-OS
-    install.py                 # CLI entry: `python -m installer.install`
+  aipotluck/                   # the root package -- see README.md's "Repo layout" for the full,
+    installer/                 # current-state tree (this diagram predates the `aipotluck.` rename
+      __init__.py               # and login/logout/status CLI; kept here for the original design
+      platform_detect.py        # rationale, not as an up-to-date file listing).
+      fetch.py                  # download+checksum+extract release asset
+      layout.py                  # where things live on disk per-OS
+      install.py                 # CLI entry: `python -m aipotluck.installer.install`
+      service/
+        __init__.py
+        base.py                  # ServiceManager ABC: install/uninstall/start/stop/status
+        systemd.py                # Linux
+        launchd.py                # macOS
+        windows_service.py        # Windows
     service/
-      __init__.py
-      base.py                  # ServiceManager ABC: install/uninstall/start/stop/status
-      systemd.py                # Linux
-      launchd.py                # macOS
-      windows_service.py        # Windows
-  service/
-    aipotluck_service.py       # the "blank" python service payload (for now: no-op / health loop)
+      aipotluck_service.py       # the "blank" python service payload (for now: no-op / health loop)
   packaging/
     windows/                   # future: Inno Setup / MSI wrapper
     macos/                     # future: .pkg / notarization
@@ -159,7 +160,7 @@ aipotluck-local-client/
 
 CLI surface (argparse, no exotic deps):
 ```
-python -m installer.install [--tag b10989] [--backend auto|cpu|cuda|vulkan|rocm]
+python -m aipotluck.installer.install [--tag b10989] [--backend auto|cpu|cuda|vulkan|rocm]
                              [--install-dir PATH] [--system] [--no-start]
                              [--via auto|direct|brew|winget]
 ```
@@ -175,7 +176,7 @@ concerns separated: llama.cpp does inference serving, our service is future
 transport/orchestration surface.
 
 ### 4.1 Service abstraction
-`installer/service/base.py` defines:
+`aipotluck/installer/service/base.py` defines:
 ```python
 class ServiceManager(ABC):
     def install(self, exec_path: str, args: list[str], name: str, user_scope: bool) -> None: ...
@@ -224,7 +225,7 @@ class ServiceManager(ABC):
   with systemd `--system` / launchd `LaunchDaemons`.
 
 ### 4.5 The "blank" service payload itself
-`service/aipotluck_service.py`: minimal, dependency-free (stdlib only) for
+`aipotluck/service/aipotluck_service.py`: minimal, dependency-free (stdlib only) for
 now:
 - A tiny loop / `http.server` health endpoint (`GET /healthz` → `200 ok`) so
   we have something externally observable and testable across all three
@@ -237,8 +238,8 @@ now:
 
 ## 4.5 The "always running" supervision layer (implemented)
 
-`service/llama_supervisor.py` implements `LlamaSupervisor`, used by
-`service/aipotluck_service.py`:
+`aipotluck/service/llama_supervisor.py` implements `LlamaSupervisor`, used by
+`aipotluck/service/aipotluck_service.py`:
 
 - On service start, spawns `llama-server` with args built from
   `runtime.json` (`--host`, `--port`, `--model`/`-hf`, `--ctx-size`,
@@ -274,17 +275,17 @@ To maximize code reuse across Linux/macOS/Windows, the service logic was
 split into a layered, OS-agnostic core plus thin OS-specific entry points:
 
 ```
-service/llama_supervisor.py   -- OS-agnostic: subprocess.Popen + polling (stdlib only)
-service/runner.py             -- OS-agnostic: AipotluckServiceRunner
+aipotluck/service/llama_supervisor.py   -- OS-agnostic: subprocess.Popen + polling (stdlib only)
+aipotluck/service/runner.py             -- OS-agnostic: AipotluckServiceRunner
                                   (HTTP status server + supervisor lifecycle,
                                   exposes start()/stop()/wait(), no signal
                                   handling, no service-framework imports)
-service/aipotluck_service.py  -- thin CLI wrapper: argparse + signal handlers
+aipotluck/service/aipotluck_service.py  -- thin CLI wrapper: argparse + signal handlers
                                   around AipotluckServiceRunner. This exact
                                   script is what systemd, launchd, AND the
                                   Windows Scheduled Task (no-admin default)
                                   all invoke identically.
-service/windows_service_host.py -- pywin32 ServiceFramework wrapper around
+aipotluck/service/windows_service_host.py -- pywin32 ServiceFramework wrapper around
                                   the same AipotluckServiceRunner, used only
                                   for the Windows --system path (a true
                                   Windows Service needs SCM callbacks
@@ -297,7 +298,7 @@ bytecode across all three OSes and all four service-registration
 mechanisms (systemd unit, launchd plist, Scheduled Task, Windows Service).
 Only the "how does this OS keep the wrapping process alive" layer differs,
 which is inherently OS-specific and was already isolated in
-`installer/service/{systemd,launchd,windows_service}.py`.
+`aipotluck/installer/service/{systemd,launchd,windows_service}.py`.
 
 A real bug was caught and fixed during the original Linux implementation
 that motivated splitting the HTTP server onto its own thread in
@@ -318,7 +319,7 @@ Python.
 
 Two cooperating pieces:
 
-- `installer/python_bootstrap.py` (`find_python()` / `ensure_python()`):
+- `aipotluck/installer/python_bootstrap.py` (`find_python()` / `ensure_python()`):
   pure-Python, cross-platform version-checking logic. On Windows, if no
   interpreter >= 3.9 is found, it shells out to
   `winget install --id Python.Python.3.12 -e --silent
@@ -331,13 +332,13 @@ Two cooperating pieces:
   sudo-gated auto-install on those platforms, since they ship Python by
   default in practice.
 - `packaging/windows/install.ps1`: the *true* zero-prerequisite Windows
-  entry point, since `python -m installer.install` can't run at all
+  entry point, since `python -m aipotluck.installer.install` can't run at all
   without Python already present. Plain PowerShell (no dependencies),
   mirrors the exact same find-or-winget-install logic, then hands off to
-  `python -m installer.install` with equivalent flags. This is what a
+  `python -m aipotluck.installer.install` with equivalent flags. This is what a
   Windows user (or a future signed .exe wrapper) actually runs first.
 
-`installer/install.py`'s service-registration step also calls
+`aipotluck/installer/install.py`'s service-registration step also calls
 `ensure_python()` itself (not just the PS1 script) before writing the
 service's `ExecStart`/`ProgramArguments`/schtasks command line -- so the
 service always points at a *validated* interpreter path, not a blindly
@@ -360,8 +361,8 @@ and piped into a shell (`curl ... | bash`, `irm ... | iex`):
 
 - `install.sh` (Linux/macOS): checks for `git`, clones (or updates an
   existing checkout of) the repo into `~/.aipotluck/src`, then execs
-  `python3 -m installer.install` with any passed-through arguments. Python
-  presence is not checked here -- that's `installer/install.py`'s job via
+  `python3 -m aipotluck.installer.install` with any passed-through arguments. Python
+  presence is not checked here -- that's `aipotluck/installer/install.py`'s job via
   `python_bootstrap.ensure_python()`, which already has the right
   per-OS messaging.
 - `install.ps1` (Windows, repo root -- distinct from

@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from installer.platform_detect import HostProfile
+from aipotluck.installer.platform_detect import HostProfile
 
 log = logging.getLogger("aipotluck.installer.newt_fetch")
 

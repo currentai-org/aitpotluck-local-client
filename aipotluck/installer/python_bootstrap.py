@@ -1,13 +1,13 @@
 """Cross-platform Python interpreter detection + best-effort auto-install.
 
 Why this exists: the installer itself is a Python script, so whoever
-invokes `python -m installer.install` already has *some* Python. But the
+invokes `python -m aipotluck.installer.install` already has *some* Python. But the
 services we register (systemd/launchd/Scheduled Task/Windows Service) all
 re-invoke `sys.executable` later, at boot/login, potentially on a machine
 where Python was only ever present via a venv that's since been removed,
 or (most commonly) a fresh Windows machine with **no system Python at
 all** reached via our packaging/windows/install.ps1 bootstrapper rather
-than a manual `python -m installer.install` call.
+than a manual `python -m aipotluck.installer.install` call.
 
 This module is the shared logic behind that bootstrapper:
   - find_python(): locate a suitable interpreter already on the system

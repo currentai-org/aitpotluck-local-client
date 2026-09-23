@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from installer.service.base import ServiceManager, ServiceState, ServiceStatus
+from aipotluck.installer.service.base import ServiceManager, ServiceState, ServiceStatus
 
 log = logging.getLogger("aipotluck.installer.service.systemd")
 

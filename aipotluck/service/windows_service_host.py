@@ -10,7 +10,7 @@ STUB STATUS: written against documented pywin32 APIs
 hardware (no Windows host available in this environment). Requires:
     pip install aipotluck-local-client[windows]
 
-CLI, driven by installer/service/windows_service.py:
+CLI, driven by aipotluck/installer/service/windows_service.py:
     python windows_service_host.py install
     python windows_service_host.py start
     python windows_service_host.py stop
@@ -26,11 +26,11 @@ import os
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from service.runner import DEFAULT_HOST, DEFAULT_PORT, SERVICE_NAME, AipotluckServiceRunner  # noqa: E402
+from aipotluck.service.runner import DEFAULT_HOST, DEFAULT_PORT, SERVICE_NAME, AipotluckServiceRunner  # noqa: E402
 
 try:
     import servicemanager  # type: ignore

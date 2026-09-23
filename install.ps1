@@ -14,7 +14,7 @@
 # via winget first if needed) -- then hands off to
 # packaging\windows\install.ps1, which does the real work already built and
 # documented there: find-or-winget-install Python, then invoke
-# installer/install.py. No logic is duplicated here.
+# aipotluck/installer/install.py. No logic is duplicated here.
 #
 # Configurable via -RepoUrl / -Ref / -SrcDir parameters or matching
 # AIPOTLUCK_REPO_URL / AIPOTLUCK_REF / AIPOTLUCK_SRC_DIR environment
@@ -26,7 +26,7 @@
 # not exercised on real Windows hardware (no Windows host available in
 # this environment). packaging\windows\install.ps1 (which this hands off
 # to) carries the same caveat; see that file and
-# installer/python_bootstrap.py for details.
+# aipotluck/installer/python_bootstrap.py for details.
 
 param(
     [string]$RepoUrl,

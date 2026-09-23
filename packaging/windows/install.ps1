@@ -2,14 +2,14 @@
 #
 # This is the TRUE entry point for a Windows user with no prerequisites --
 # it does not assume Python is already installed (that's the whole point:
-# `python -m installer.install` can't run without Python, so something
-# that doesn't need Python has to get Python first).
+# `python -m aipotluck.installer.install` can't run without Python, so
+# something that doesn't need Python has to get Python first).
 #
 # STUB STATUS: written against documented winget/PowerShell behavior, not
 # exercised on real Windows hardware (no Windows host available in this
-# environment). Logic mirrors installer/python_bootstrap.py's Windows path
-# so both entry points agree; that module is the one covered by unit-style
-# testing (see tests), this script just drives it.
+# environment). Logic mirrors aipotluck/installer/python_bootstrap.py's
+# Windows path so both entry points agree; that module is the one covered
+# by unit-style testing (see tests), this script just drives it.
 #
 # Usage (from an elevated OR regular PowerShell prompt):
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
@@ -19,8 +19,8 @@
 #   2. If missing, install Python via winget (silent, accept agreements).
 #   3. Re-resolve python.exe (winget doesn't refresh the current session's
 #      PATH, so we probe well-known install locations directly).
-#   4. Hand off to `python -m installer.install` with any args this script
-#      was called with.
+#   4. Hand off to `python -m aipotluck.installer.install` with any args
+#      this script was called with.
 
 param(
     [switch]$System,
@@ -102,7 +102,7 @@ if (-not $pythonExe) {
 Write-Host "Using Python: $pythonExe"
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$installerArgs = @("-m", "installer.install", "--backend", $Backend)
+$installerArgs = @("-m", "aipotluck.installer.install", "--backend", $Backend)
 if ($System) { $installerArgs += "--system" }
 if ($ModelHf) { $installerArgs += @("--model-hf", $ModelHf) }
 if ($Tag) { $installerArgs += @("--tag", $Tag) }

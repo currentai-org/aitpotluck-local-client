@@ -2,7 +2,7 @@
 """aipotluck-local-client installer.
 
 Usage:
-    python -m installer.install [options]
+    python -m aipotluck.installer.install [options]
 
 Flow:
     1. Detect platform/arch/GPU-backend.
@@ -10,7 +10,8 @@ Flow:
     3. Download (cached, checksum-verified) + extract it.
     4. Write runtime.json pointing at the resolved llama-server binary.
     5. Install our blank Python service via the OS-native service manager.
-    6. Optionally start the service (default: yes).
+    6. Install the `aipotluck-local-client` CLI shim onto PATH (see install_cli_shim below).
+    7. Optionally start the service (default: yes).
 """
 
 from __future__ import annotations
@@ -21,13 +22,14 @@ import logging
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from installer import fetch, layout, newt_fetch
-from installer.platform_detect import HostProfile, detect_host_profile
-from installer.python_bootstrap import PythonNotFoundError, ensure_python
-from installer.service.base import ServiceState, get_service_manager
+from aipotluck.installer import fetch, layout
+from aipotluck.installer.platform_detect import HostProfile, detect_host_profile
+from aipotluck.installer.python_bootstrap import PythonNotFoundError, ensure_python
+from aipotluck.installer.service.base import ServiceState, get_service_manager
+from aipotluck.installer.cli_shim import CLI_SHIM_NAME, install_cli_shim
 
 log = logging.getLogger("aipotluck.installer")
 
@@ -91,18 +93,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-host", default=DEFAULT_SERVER_HOST, help="llama-server bind host")
     parser.add_argument("--server-port", type=int, default=DEFAULT_SERVER_PORT, help="llama-server bind port")
 
-    # CUR-1266: managed (tunnel) pairing -- the three flags the Settings UI's "Add a managed
-    # server" install command hands the user, verbatim. All three or none; the installer validates
-    # this rather than silently ignoring a partial set.
-    parser.add_argument("--tunnel-id", default=None, help="Pangolin newt device id (managed pairing)")
-    parser.add_argument("--tunnel-secret", default=None, help="Pangolin newt device secret (managed pairing)")
-    parser.add_argument("--tunnel-endpoint", default=None, help="Pangolin tunnel endpoint URL (managed pairing)")
-    parser.add_argument(
-        "--remove-tunnel", action="store_true",
-        help="Remove this device's tunnel pairing (drops runtime.json's 'tunnel' section, restarts "
-             "the service) without touching the llama.cpp install. Mutually exclusive with --tunnel-*.",
-    )
-
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -114,58 +104,7 @@ def setup_logging(verbose: bool) -> None:
     )
 
 
-def _tunnel_flags_given(args: argparse.Namespace) -> list[str]:
-    return [
-        name for name, value in (
-            ("--tunnel-id", args.tunnel_id),
-            ("--tunnel-secret", args.tunnel_secret),
-            ("--tunnel-endpoint", args.tunnel_endpoint),
-        )
-        if value
-    ]
-
-
-def run_remove_tunnel(args: argparse.Namespace) -> int:
-    """CUR-1266: the client-side half of Settings' "Remove" button -- the server only revokes its
-    own Pangolin site/resource on delete (see web/'s DELETE route); this is what actually stops the
-    local newt process from retrying with the now-invalid credential."""
-    profile: HostProfile = detect_host_profile(args.backend)
-    lay = layout.get_layout(profile.os_name, system_scope=args.system, override_root=args.install_dir)
-    runtime_path = lay.config_dir / "runtime.json"
-    if not runtime_path.exists():
-        log.error("No runtime.json found at %s -- nothing to unpair", runtime_path)
-        return 1
-
-    runtime_config = json.loads(runtime_path.read_text(encoding="utf-8"))
-    if "tunnel" not in runtime_config:
-        log.info("No tunnel section present; already unpaired.")
-        return 0
-
-    del runtime_config["tunnel"]
-    runtime_path.write_text(json.dumps(runtime_config, indent=2), encoding="utf-8")
-    log.info("Removed tunnel pairing from %s", runtime_path)
-
-    if not args.no_service:
-        service_mgr = get_service_manager(profile.os_name)
-        service_mgr.stop(SERVICE_NAME, system_scope=args.system)
-        service_mgr.start(SERVICE_NAME, system_scope=args.system)
-        log.info("Restarted %s service", SERVICE_NAME)
-    return 0
-
-
 def run_install(args: argparse.Namespace) -> int:
-    if args.remove_tunnel:
-        if _tunnel_flags_given(args):
-            log.error("--remove-tunnel cannot be combined with --tunnel-id/--tunnel-secret/--tunnel-endpoint")
-            return 1
-        return run_remove_tunnel(args)
-
-    given = _tunnel_flags_given(args)
-    if given and len(given) != 3:
-        missing = sorted({"--tunnel-id", "--tunnel-secret", "--tunnel-endpoint"} - set(given))
-        log.error("Managed pairing needs all three tunnel flags; missing: %s", ", ".join(missing))
-        return 1
-
     profile: HostProfile = detect_host_profile(args.backend)
     log.info("Detected host profile: os=%s arch=%s backend=%s", profile.os_name, profile.arch, profile.backend)
 
@@ -190,24 +129,6 @@ def run_install(args: argparse.Namespace) -> int:
     server_bin = fetch.find_binary(llama_dir, "llama-server")
     log.info("llama-server binary: %s", server_bin)
 
-    tunnel_config: dict | None = None
-    if given:
-        newt_manifest_path = REPO_ROOT / "newt_version.json"
-        newt_manifest = newt_fetch.load_newt_manifest(newt_manifest_path)
-        newt_asset_key, newt_asset_entry = newt_fetch.resolve_newt_asset(newt_manifest, profile)
-        log.info("Resolved newt asset: %s (%s)", newt_asset_key, newt_asset_entry["file"])
-        newt_binary = newt_fetch.download_newt_binary(
-            newt_manifest, newt_asset_entry, lay.install_root / "newt" / newt_manifest["tag"]
-        )
-        log.info("newt binary: %s", newt_binary)
-        tunnel_config = {
-            "provider": "pangolin",
-            "binary": str(newt_binary),
-            "id": args.tunnel_id,
-            "secret": args.tunnel_secret,
-            "endpoint": args.tunnel_endpoint,
-        }
-
     runtime_config = {
         "llama_cpp": {
             "tag": manifest["tag"],
@@ -227,20 +148,23 @@ def run_install(args: argparse.Namespace) -> int:
             "config_dir": str(lay.config_dir),
             "log_dir": str(lay.log_dir),
         },
+        # Every install starts logged out -- no Pangolin credentials, so the service (runner.py)
+        # holds both llama-server and newt back until `aipotluck-local-client login` sets this
+        # true. This is what lets the public one-line installer (install.sh) take zero arguments:
+        # it never needs a tunnel id/secret/endpoint in hand to finish installing.
+        "logged_in": False,
     }
-    if tunnel_config:
-        runtime_config["tunnel"] = tunnel_config
     runtime_path = lay.config_dir / "runtime.json"
     runtime_path.write_text(json.dumps(runtime_config, indent=2), encoding="utf-8")
     log.info("Wrote runtime config: %s", runtime_path)
 
     if args.no_service:
-        log.info("--no-service set; skipping Python service install.")
-        _print_summary(profile, lay, runtime_config, service_status=None)
+        log.info("--no-service set; skipping Python service install and the CLI PATH shim.")
+        _print_summary(profile, lay, runtime_config, service_status=None, shim_path=None)
         return 0
 
     service_mgr = get_service_manager(profile.os_name)
-    service_script = REPO_ROOT / "service" / "aipotluck_service.py"
+    service_script = REPO_ROOT / "aipotluck" / "service" / "aipotluck_service.py"
     service_args = [
         "--config-dir", str(lay.config_dir),
         "--log-dir", str(lay.log_dir),
@@ -261,12 +185,14 @@ def run_install(args: argparse.Namespace) -> int:
     )
     log.info("Installed %s service (system_scope=%s)", SERVICE_NAME, args.system)
 
+    shim_path = install_cli_shim(profile, python_exe, args.system)
+
     if not args.no_start:
         service_mgr.start(SERVICE_NAME, system_scope=args.system)
         log.info("Started %s service", SERVICE_NAME)
 
     status = service_mgr.status(SERVICE_NAME, system_scope=args.system)
-    _print_summary(profile, lay, runtime_config, service_status=status)
+    _print_summary(profile, lay, runtime_config, service_status=status, shim_path=shim_path)
 
     if status.state not in (ServiceState.RUNNING, ServiceState.STOPPED):
         log.warning("Service status is ambiguous: %s (%s)", status.state, status.detail)
@@ -274,7 +200,9 @@ def run_install(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_summary(profile: HostProfile, lay: layout.Layout, runtime_config: dict, service_status) -> None:
+def _print_summary(
+    profile: HostProfile, lay: layout.Layout, runtime_config: dict, service_status, shim_path: Path | None
+) -> None:
     print()
     print("=" * 60)
     print("aipotluck-local-client install summary")
@@ -290,11 +218,22 @@ def _print_summary(profile: HostProfile, lay: layout.Layout, runtime_config: dic
         print(f"  service health:  http://127.0.0.1:8765/healthz")
         print(f"  service status:  http://127.0.0.1:8765/status")
         llama = runtime_config["llama_cpp"]
-        print(f"  llama-server:    http://{llama['host']}:{llama['port']}/health (managed by the service)")
+        print(f"  llama-server:    http://{llama['host']}:{llama['port']}/health (managed by the service, once logged in)")
     else:
         print("Service:        not installed (--no-service)")
-    if "tunnel" in runtime_config:
-        print(f"Tunnel:         paired ({runtime_config['tunnel']['provider']}) -> {runtime_config['tunnel']['endpoint']}")
+    if shim_path is not None:
+        print(f"CLI:            {shim_path}")
+    print("=" * 60)
+    print("You're logged out -- llama-server and the tunnel are held back until you pair this")
+    print("device. Get a tunnel id/secret/endpoint from Settings -> Local Inference -> Add a")
+    print("managed server on aipotluck.org, then run:")
+    print()
+    if shim_path is not None:
+        print(f"    {CLI_SHIM_NAME} login")
+        print()
+        print(f"(open a new terminal first if this is the first time {CLI_SHIM_NAME} has been installed)")
+    else:
+        print("    python3 -m aipotluck.installer.cli login")
     print("=" * 60)
 
 

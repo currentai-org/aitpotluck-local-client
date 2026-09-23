@@ -10,14 +10,15 @@ windows = ["pywin32; sys_platform == 'win32'"]
 dev = ["pytest"]
 
 [project.scripts]
-aipotluck-install = "installer.install:main"
+aipotluck-install = "aipotluck.installer.install:main"
+aipotluck-local-client = "aipotluck.installer.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["installer*", "service*"]
+include = ["aipotluck*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.ps1"]
