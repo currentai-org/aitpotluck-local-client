@@ -137,15 +137,28 @@ The Python installer's flags (the PowerShell wrapper exposes the equivalent
 -v / --verbose
 ```
 
-### Building from source
+### Building from source (and our own binary cache)
 
 Not every host has a prebuilt release binary it can actually run --
 `build_strategy.py` checks this (not just "does an asset exist for this
 os/arch/backend", but "does the *specific* asset resolve to something this
-glibc can run") and `source_build.py` builds `llama-server` from the pinned
-`vendor/llama.cpp` tag instead when it doesn't. This is automatic; you'll
-see it happen if the installer logs "No viable prebuilt asset for this
-host... building llama-server from source" instead of "Resolved asset:".
+glibc can run"). When it doesn't, two things are tried in order before
+anything gets compiled:
+
+1. **Our own cache of prebuilt binaries** (`build_cache.py`,
+   `llama_custom_builds.json`) -- once we've built a binary for a given
+   host/backend/GPU-architecture combination once, there's no reason to pay
+   a 30-90 minute compile again on every matching device. If a cached entry
+   matches, it's downloaded (cached, checksum-verified, same as any other
+   asset) and compilation is skipped entirely.
+2. **`source_build.py`** builds `llama-server` from the pinned
+   `vendor/llama.cpp` tag when neither an upstream asset nor a cached custom
+   one matches.
+
+This is all automatic; you'll see it happen if the installer logs "No
+viable upstream asset for this host... but a cached custom build exists" (no
+compile) or "No viable prebuilt asset for this host... building llama-server
+from source" (a real compile) instead of "Resolved asset:".
 
 Two concrete cases this covers today:
 
@@ -213,6 +226,45 @@ rather than fail 40 minutes in from `ENOSPC`). Re-running the installer
 after a successful source build is fast -- it's keyed to the exact
 tag+backend combination and skips straight to reusing the binary already
 built.
+
+#### Custom binary cache (`llama_custom_builds.json`)
+
+This is a separate, optional manifest alongside `llama_version.json`, for
+binaries **we've** built and hosted ourselves -- not upstream releases. Same
+shape (`release_base_url` + `tag` + `{key: {file, sha256}}`), same
+download/verify/extract code path (`fetch.py`), just a different source and
+a different key format: `{os}-{arch}-{backend}`, plus `-sm{N}` for CUDA
+(e.g. `linux-arm64-cuda-sm87` for a Jetson Orin) -- since different
+Jetson-class generations (Xavier SM 7.2, Orin SM 8.7, Thor SM 10.x) are not
+interchangeable; a binary built for one `CMAKE_CUDA_ARCHITECTURES` value
+will not run correctly targeting a different one.
+
+The file is entirely optional -- a checkout without one (or with an empty
+`assets` map) just falls through to a real source build every time, exactly
+as if this feature didn't exist.
+
+To add an entry after building on a new host:
+
+1. Run the installer there (`--no-service` is fine for this) and let it
+   finish a real source build.
+2. Package the *contents* of the build's `bin/` directory into a flat
+   top-level `llama-<tag>/` directory, `tar.gz`'d -- this matches upstream's
+   own release archive layout exactly (`llama-b10989/llama-server`,
+   `llama-b10989/libggml-cuda.so.0`, etc., no nested `bin/`), so
+   `fetch.find_binary`'s recursive search works unchanged either way:
+   ```bash
+   cd /path/to/llama.cpp-build
+   mkdir /tmp/llama-<tag> && cp -a bin/. /tmp/llama-<tag>/
+   tar -czf llama-<tag>-bin-<key>.tar.gz -C /tmp llama-<tag>
+   sha256sum llama-<tag>-bin-<key>.tar.gz
+   ```
+   This only works because the build sets `CMAKE_INSTALL_RPATH=$ORIGIN` (see
+   above) -- without it, the packaged binary would only work from the exact
+   path it was originally built at.
+3. Upload the archive as an asset on a GitHub release of this repo (a
+   `custom-builds` tag, reused across entries as more platforms are added).
+4. Add an entry to `llama_custom_builds.json` under that key, with the file
+   name and the sha256 from step 2.
 
 After install, the service:
 
@@ -339,10 +391,11 @@ spawned grandchild process to prove a build timeout actually kills the whole pro
 spawn/health-poll/terminate (or configure/build/kill) orchestration is exactly the kind of thing a
 mock can make *look* correct while testing nothing, so those modules are exercised for real
 instead. Covers `platform_detect.py` (including glibc/CUDA-compute-capability detection),
-`build_strategy.py`'s prebuilt-vs-source-build decision, `layout.py`, `cli.py` (including the
-argparse regression -- see `test_cli_argparse.py`'s docstring), `cli_shim.py`, `model_pull.py`'s
-`pull`/`list` orchestration, `install.py`'s `--no-service`/source-build/real install paths, and
-`service/runner.py`'s login-gating and `/status` secret redaction.
+`build_strategy.py`'s prebuilt-vs-source-build decision, `build_cache.py`'s custom-binary-cache
+lookup, `layout.py`, `cli.py` (including the argparse regression -- see `test_cli_argparse.py`'s
+docstring), `cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `install.py`'s
+`--no-service`/source-build/binary-cache/real install paths, and `service/runner.py`'s login-gating
+and `/status` secret redaction.
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
@@ -356,6 +409,7 @@ download and inference request).
 ```
 vendor/llama.cpp/              git submodule, pinned commit (reference + docs)
 llama_version.json             pinned release tag + per-platform asset checksums
+llama_custom_builds.json        our own cached prebuilt binaries (see "Building from source")
 newt_version.json               pinned newt (Pangolin tunnel client) release + per-platform checksums
 install.sh                     public one-line installer entry point (Linux/macOS)
 install.ps1                    public one-line installer entry point (Windows)
@@ -368,6 +422,7 @@ aipotluck/                      the root package everything below lives under
     platform_detect.py             OS/arch/GPU-backend/glibc/CUDA-compute-capability detection
     build_strategy.py              decide prebuilt-asset vs. build-from-source per host
     source_build.py                configure+build llama-server from vendor/llama.cpp
+    build_cache.py                  check our own prebuilt-binary cache before compiling
     fetch.py                       download+checksum+extract llama.cpp releases
     newt_fetch.py                  download+checksum-verify the pinned newt binary
     layout.py                      per-OS install paths

@@ -132,6 +132,56 @@ aipotluck-local-client/
 - Idempotent: re-running with the same tag/asset is a no-op if already
   extracted and checksum matches.
 
+### 3.2.1 When no prebuilt asset works: source build + our own binary cache
+
+Not every host has a viable upstream release asset. `build_strategy.py` decides this per host --
+two independent, confirmed-real triggers: no asset was ever published for the detected
+os/arch/backend (every Jetson-class arm64+CUDA board -- `nvidia-smi` is real there, but llama.cpp's
+release CI has never published a `linux-arm64-cuda` asset), or the best available asset needs a
+newer glibc than the host has (llama.cpp's own CI builds its Linux arm64 assets against a newer
+base image than most arm64 boards run -- the pinned tag's `linux-arm64-cpu` asset needs glibc 2.38,
+JetPack 6.2.3 ships 2.35, so even the CPU-only fallback refuses to start there).
+
+When that happens, three tiers are tried in order, each cheaper than the next:
+
+1. **Our own binary cache** (`build_cache.py`, `llama_custom_builds.json`). Once a binary has been
+   built from source for a given (os, arch, backend, GPU architecture) combination, there's no
+   reason to pay a 30-90 minute compile again on every matching host -- it's archived in the same
+   format as the upstream release assets (a `.tar.gz` extracting to a flat top-level directory,
+   matching llama.cpp's own release packaging exactly) and hosted as a GitHub release on this
+   project's own public repo. The manifest shape deliberately mirrors `llama_version.json`'s assets
+   section (`release_base_url` + `tag` + `{key: {file, sha256}}`), so this reuses
+   `fetch.download_asset`/`extract_archive`/`find_binary` completely unchanged -- only the key
+   resolution differs. The key includes the CUDA architecture where upstream's never need to
+   (`linux-arm64-cuda-sm87` for Orin, distinct from a hypothetical `-sm72` for Xavier or `-sm53` for
+   the original Nano/TX1) -- a binary built for one `CMAKE_CUDA_ARCHITECTURES` value will not run
+   correctly on a different one, so these are never treated as interchangeable.
+2. **Build from source** (`source_build.py`), when neither an upstream asset nor a cached custom
+   one matches. Checks the host actually has what a build needs (cmake, git, a C++ compiler,
+   OpenSSL headers, the OpenMP runtime, and per-backend a GPU vendor toolchain -- nvcc for CUDA,
+   glslc+headers for Vulkan, hipcc for ROCm), cross-referenced against every Linux job in
+   llama.cpp's own release CI rather than guessed from one host's missing package. For the
+   apt-fixable gaps, the installer can install them itself via `sudo apt-get install`, but only
+   with explicit consent (`--allow-apt-install`, or an interactive y/N prompt that never fires
+   without a real controlling terminal) -- a GPU vendor toolchain is never auto-installed under any
+   flag, since none of those are a small, safe, distro-generic install. Two build-time gotchas are
+   the same shape (a plain, non-`REQUIRED` `find_package(...)` that degrades silently rather than
+   failing the configure step): missing OpenSSL headers silently compile out HTTPS support (which
+   `-hf`/`--cache-list`, and therefore this project's own pull/list commands, depend on), and
+   missing libgomp1 silently falls back to single-threaded CPU inference. Both are caught in
+   preflight, before ever starting a build that can otherwise take well over an hour on a low-power
+   board. The build sets `CMAKE_INSTALL_RPATH=$ORIGIN` (matching llama.cpp's own release CI)
+   specifically so its output is relocatable -- movable into the binary cache above, or into a
+   different install root -- rather than only working from the exact path it was compiled at.
+3. Refuse clearly, if source-build prerequisites are missing and the caller declined
+   (or was never asked, e.g. `--no-apt-install`/no terminal) to fix them, or `--no-source-build` was
+   passed to fail fast rather than sit through a long build.
+
+Confirmed end-to-end on a real Jetson Orin Nano (JetPack 6.2.3): the full pipeline (detection ->
+strategy -> preflight -> source build) produced a genuinely working CUDA `llama-server`
+(`--list-devices` reports `CUDA0: Orin`), and once cached, the same host skips the ~35 minute
+compile entirely on a repeat install.
+
 ### 3.3 Install locations (`layout.py`), per OS, no-admin-by-default
 - Linux: `~/.local/share/aipotluck/` (binaries+libs), config in
   `~/.config/aipotluck/`, logs in `~/.local/state/aipotluck/logs/`
