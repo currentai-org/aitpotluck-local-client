@@ -81,6 +81,16 @@ def build_llama_server_args(llama_cfg: dict) -> list[str]:
     if gpu_layers is not None:
         args += ["--gpu-layers", str(gpu_layers)]
 
+    # llama-server defaults to 4 parallel slots with no flag of our own controlling it -- and
+    # --ctx-size sets context PER SLOT, not divided across them (confirmed live: "--ctx-size 4096"
+    # with the default slot count logs "n_slots = 4, n_ctx_slot = 4096"), so total KV cache memory
+    # scales as slots * ctx_size. On a single-user local device, cutting slots to 1 recovers up to
+    # 4x the usable per-request context for the same memory budget -- the real lever behind "the
+    # model supports more context than my request allows," confirmed on a real device (CUR-1965).
+    parallel = llama_cfg.get("parallel")
+    if parallel:
+        args += ["--parallel", str(parallel)]
+
     return args
 
 

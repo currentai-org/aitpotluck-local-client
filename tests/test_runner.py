@@ -80,6 +80,25 @@ class TestBuildLlamaServerArgs:
         assert "--ctx-size" in args and "4096" in args
         assert "--gpu-layers" in args and "auto" in args
 
+    def test_parallel_passed_through_when_set(self):
+        args = runner.build_llama_server_args(
+            {"host": "127.0.0.1", "port": 8080, "model_hf": "x", "parallel": 1}
+        )
+        assert "--parallel" in args and "1" in args
+
+    def test_parallel_omitted_when_unset_leaves_llama_servers_own_default(self):
+        # No --parallel flag at all -- llama-server picks its own default (4 today), unchanged
+        # behavior for any runtime.json predating this field.
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "model_hf": "x"})
+        assert "--parallel" not in args
+
+    def test_parallel_zero_is_also_omitted(self):
+        # 0 slots isn't a meaningful value to pass through; falsy-and-unset should behave the same.
+        args = runner.build_llama_server_args(
+            {"host": "127.0.0.1", "port": 8080, "model_hf": "x", "parallel": 0}
+        )
+        assert "--parallel" not in args
+
 
 class TestBuildSupervisor:
     def test_returns_none_without_llama_cpp_section(self, caplog):
