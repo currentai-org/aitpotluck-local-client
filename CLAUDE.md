@@ -55,6 +55,28 @@ branch a commit lands on, it's what's true before it lands:
   reads exactly like a hang, not like a failure — don't let a tooling default make a passing check
   look broken.
 
+## Runtime parameters: always observable, locally and remotely
+
+Any parameter this project computes on the host's behalf rather than taking as an explicit
+user-specified value — today, whatever the ctx_size/parallel auto-sizing work (CUR-1965) lands as
+— must be visible two ways: from the device itself (`aipotluck-local-client status`) and over the
+HTTP API a remote caller (the web UI, a support session, anything reaching the service through the
+tunnel) would use (`GET /status`'s `runtime_params` key; `GET /capabilities`'
+`current_install.runtime_params` too). Both today read the exact same function
+(`aipotluck.diagnostics.runtime_params`) — never build a second summary that could drift from it.
+
+This isn't hypothetical caution: CUR-1965 itself was a real device silently running with 4x more
+KV-cache-eating parallel slots than a single-user box needs, and nothing — not `status`, not any
+HTTP surface — made that visible before the person debugging it had to work it out from a
+context-overflow error and a manual `/props` query. When you add a parameter this project computes
+(not just accepts from a flag), the traceability isn't optional polish, it's the same bar as the
+parameter itself: a value picked with no way to see *why* is exactly the kind of thing that reads
+as "it just works" until the one case it doesn't, and by then nobody remembers the reasoning.
+
+Concretely, when auto-computing a value: write it into `runtime.json`'s `llama_cpp.tuning` map as
+`{param_name: "reason string"}` — a plain sentence someone can read in `status` output directly,
+not a code to look up.
+
 ## Tests and gates: name the contract, not the behavior
 
 A green suite is evidence of conformance to *intent*, and only as good as whether the intent was

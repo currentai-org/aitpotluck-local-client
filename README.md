@@ -276,10 +276,10 @@ does on its own.
 
 After install, the service:
 
-- Exposes a health check at `http://127.0.0.1:8765/healthz`, detailed
+- Exposes a health check at `http://127.0.0.1:8069/healthz`, detailed
   status (including live llama-server supervisor state) at
-  `http://127.0.0.1:8765/status`, and a full system/capability fingerprint
-  at `http://127.0.0.1:8765/capabilities` -- OS/distro, arch, glibc
+  `http://127.0.0.1:8069/status`, and a full system/capability fingerprint
+  at `http://127.0.0.1:8069/capabilities` -- OS/distro, arch, glibc
   version, CPU/memory/disk, GPU backend + CUDA compute capability, every
   build tool `source_build.py` checks for, and the actual install strategy
   this device would resolve to right now (upstream asset vs. our own binary
@@ -290,6 +290,14 @@ After install, the service:
   for diagnosing a device that's already in a broken state, since every
   section degrades independently (`{"error": ...}`) rather than the whole
   endpoint failing if one probe does.
+- **Every runtime parameter this project computes automatically is traceable,
+  locally and remotely, from one real source** (`aipotluck.diagnostics.runtime_params`)
+  -- both `/status` and `/capabilities` carry a `runtime_params` key (the
+  llama-server flags actually in effect, plus a plain-sentence reason for
+  anything computed rather than explicitly set, via `runtime.json`'s
+  `llama_cpp.tuning`), and `aipotluck-local-client status` prints the same
+  data. Standing convention, not a one-off -- see CLAUDE.md's "Runtime
+  parameters" section for why.
 - **Actively supervises `llama-server`**: starts it on service startup,
   polls `/health` every 5s, and restarts it automatically on crash with
   exponential backoff (1s, 2s, 5s, 10s, 20s, 30s, 60s -- resets if the

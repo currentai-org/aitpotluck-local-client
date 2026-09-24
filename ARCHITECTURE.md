@@ -304,13 +304,22 @@ now:
   (SIGTERM, 15s grace period, then SIGKILL) before exiting.
 - Exposes live state via `LlamaProcessInfo` (pid, running, healthy,
   restart_count, last_exit_code) surfaced at `GET /status` on the aipotluck
-  service's own HTTP endpoint (port 8765). A third endpoint, `GET
+  service's own HTTP endpoint (port 8069). A third endpoint, `GET
   /capabilities` (`aipotluck/diagnostics.py`), reports a full system/capability
   fingerprint built from the same detection code the installer itself uses
   (`platform_detect`/`build_strategy`/`build_cache`/`source_build`) -- OS,
   arch, glibc, CPU/memory/disk, GPU backend + CUDA compute capability, every
   build tool, and the install strategy this device would resolve to right
   now vs. what's actually installed. See section 3.2.1 above.
+- `GET /status` and `/capabilities` both also carry `runtime_params`
+  (`diagnostics.runtime_params`, one real function, not a copy per endpoint):
+  the llama-server flags actually in effect (`ctx_size`, `parallel`,
+  `gpu_layers`, ...) plus, for anything this project computed rather than a
+  user set explicitly, a plain-sentence reason from `runtime.json`'s
+  `llama_cpp.tuning` map. `aipotluck-local-client status` prints the same
+  dict. See CLAUDE.md's "Runtime parameters" section for why this exists as
+  a standing convention, not a one-off for the ctx_size/parallel case that
+  prompted it (CUR-1965).
 
 Two-tier self-healing, confirmed by test:
 1. systemd `Restart=always` / launchd `KeepAlive` / Windows Service restarts
