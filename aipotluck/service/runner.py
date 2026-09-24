@@ -92,6 +92,18 @@ def build_llama_server_args(llama_cfg: dict) -> list[str]:
     if parallel:
         args += ["--parallel", str(parallel)]
 
+    # Set together by aipotluck.installer.model_sizing's auto-sizing routine (CUR-1965's
+    # follow-up) whenever the active model changes -- llama.cpp requires flash attention for a
+    # quantized V cache and auto-enables it itself (--flash-attn defaults to "auto"), so no flag
+    # of our own is needed here beyond the two cache types.
+    cache_type_k = llama_cfg.get("cache_type_k")
+    if cache_type_k:
+        args += ["--cache-type-k", str(cache_type_k)]
+
+    cache_type_v = llama_cfg.get("cache_type_v")
+    if cache_type_v:
+        args += ["--cache-type-v", str(cache_type_v)]
+
     return args
 
 

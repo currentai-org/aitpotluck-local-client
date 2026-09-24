@@ -62,11 +62,23 @@ class TestRuntimeParams:
 
     def test_extracts_the_known_fields(self):
         params = diag.runtime_params(
-            {"llama_cpp": {"ctx_size": 32768, "parallel": 1, "gpu_layers": "auto", "host": "127.0.0.1", "port": 8080}}
+            {
+                "llama_cpp": {
+                    "ctx_size": 32768,
+                    "parallel": 1,
+                    "gpu_layers": "auto",
+                    "cache_type_k": "q8_0",
+                    "cache_type_v": "q8_0",
+                    "host": "127.0.0.1",
+                    "port": 8080,
+                }
+            }
         )
         assert params["ctx_size"] == 32768
         assert params["parallel"] == 1
         assert params["gpu_layers"] == "auto"
+        assert params["cache_type_k"] == "q8_0"
+        assert params["cache_type_v"] == "q8_0"
 
     def test_missing_llama_cpp_section_is_all_nones_not_a_crash(self):
         params = diag.runtime_params({})

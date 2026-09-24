@@ -403,6 +403,34 @@ see `vendor/llama.cpp/common/hf-cache.cpp`) -- via `llama-server`'s own `--cache
 the same "don't re-implement it" reason `pull` reuses `-hf`. The currently active model (whatever
 `runtime.json`'s `llama_cpp.model_hf` is set to) is marked `(active)`.
 
+### Automatic runtime sizing (`aipotluck/installer/model_sizing.py`)
+
+Every `pull` also re-sizes `ctx_size`, `parallel`, and the KV cache type (CUR-1965's follow-up --
+the fix that motivated this feature was a hand-done version of exactly this calculation on a real
+Jetson). After the model finishes downloading, a short second `llama-server` spawn (fast -- the
+model's already cached, this is a local load, not a network fetch) at a small probe context loads
+just far enough to report its own hyperparameters (`n_ctx_train`, per-layer KV-cache footprint)
+and to measure real available memory *with that model already resident*. From those two numbers it
+picks:
+
+- **`ctx_size`** -- the largest context that fits the memory budget, capped at the model's own
+  trained context (there's no benefit to requesting more than that).
+- **`parallel`** -- always `1` on this single-user local device; llama-server's default of 4
+  slots divides the same memory budget four ways for no benefit here.
+- **`cache_type_k`/`cache_type_v`** -- `q8_0` if the model's head dimension supports a quantized
+  KV cache and there's room to reach the full trained context with it; `q4_0` if headroom is
+  tighter than that; left at llama-server's f16 default if the architecture can't use a quantized
+  cache at all (a head dimension that doesn't divide evenly into the 32-element quantization block
+  size -- llama.cpp itself refuses to start in that case, confirmed against its own startup
+  validation).
+
+Every one of those is written into `runtime.json`'s `llama_cpp.tuning` map with a plain-sentence
+reason, per CLAUDE.md's "Runtime parameters" convention -- visible from both
+`aipotluck-local-client status` and `GET /capabilities`/`GET /status`'s `runtime_params`. If sizing
+can't be done (memory can't be measured on this platform yet, the probe times out, ...) it fails
+loud into a log warning and leaves whatever ctx_size/parallel/cache_type were already configured
+untouched -- it never blocks the model switch itself, and never guesses.
+
 ## CLI on PATH
 
 `aipotluck-local-client` (`aipotluck/installer/cli_shim.py`) is written

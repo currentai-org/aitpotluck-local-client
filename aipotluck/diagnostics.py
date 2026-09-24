@@ -204,7 +204,17 @@ def _install_strategy_info(profile: HostProfile) -> dict[str, Any]:
     }
 
 
-_RUNTIME_PARAM_FIELDS = ("ctx_size", "gpu_layers", "parallel", "host", "port", "model_hf", "model_path")
+_RUNTIME_PARAM_FIELDS = (
+    "ctx_size",
+    "gpu_layers",
+    "parallel",
+    "cache_type_k",
+    "cache_type_v",
+    "host",
+    "port",
+    "model_hf",
+    "model_path",
+)
 
 
 def runtime_params(runtime_config: dict[str, Any]) -> dict[str, Any]:

@@ -293,7 +293,7 @@ now:
 
 - On service start, spawns `llama-server` with args built from
   `runtime.json` (`--host`, `--port`, `--model`/`-hf`, `--ctx-size`,
-  `--gpu-layers`).
+  `--gpu-layers`, `--parallel`, `--cache-type-k`/`--cache-type-v`).
 - Polls `GET /health` on llama-server every 5s (`HEALTH_POLL_INTERVAL_SECONDS`).
 - On crash (process exit), restarts with exponential backoff
   (1/2/5/10/20/30/60s), resetting to the start of the schedule if the
@@ -333,6 +333,51 @@ default placeholder), health-check transition to healthy, live inference
 request, `kill -9` on the llama-server child recovered automatically
 (new pid, `restart_count` incremented, healthy again ~35s later), and
 clean shutdown terminates both processes with no orphans.
+
+### 4.5.1 Automatic runtime sizing on model switch (`aipotluck/installer/model_sizing.py`, CUR-1965)
+
+`aipotluck-local-client pull` (cli.py's `run_pull_model`) re-sizes `ctx_size`/`parallel`/
+`cache_type_k`/`cache_type_v` every time the active model changes, rather than leaving whatever
+was configured for the *previous* model in place. Two real facts drive the decision, both measured
+directly rather than guessed from the model's name or file size:
+
+- **The model's own hyperparameters** -- `n_ctx_train` (trained context length) and the per-layer
+  KV-cache footprint (`n_embd_k_gqa`/`n_embd_v_gqa`, `n_embd_head_k` for the quantization-block-
+  size divisibility check). Read by spawning `llama-server` a second time at a small probe context
+  (the model is already downloaded by this point, so this is a fast local load, not a repeat
+  network fetch) and parsing its own `print_info:` startup log -- the same values a real
+  `llama_model::print_info()` call prints, not re-derived from the GGUF file independently. This
+  keeps the probe in lockstep with whatever file `-hf`/`--model` actually resolved to, matching the
+  reasoning `model_pull.py`'s own docstring gives for reusing `-hf` instead of re-implementing HF's
+  quant-matching logic.
+- **Real available memory, measured with that exact model already loaded** (right before the probe
+  process is torn down) -- not idle headroom before load, and not a separately-estimated model
+  file size subtracted from it. This is the direct fix for the class of gap that produced CUR-1965
+  in the first place: a value that "just works" until the one case it doesn't, because nothing
+  measured the actual state.
+
+The sizing math itself (`compute_sizing`): KV-cache bytes/token = `n_layer * (n_embd_k_gqa *
+bytes_per_element(cache_type_k) + n_embd_v_gqa * bytes_per_element(cache_type_v))` -- the same
+formula CUR-1965 hand-derived and confirmed against a real device (~112 KiB/token for Llama 3.2 3B
+at f16: 28 layers, 8 KV-heads, 128 head-dim). 75% of measured available memory is budgeted as the
+usable ceiling (`_MEMORY_SAFETY_FRACTION`) -- a deliberate, openly-approximate fudge factor for the
+compute/attention scratch buffers that scale with context but aren't captured by the KV-cache
+formula alone (CUR-1965 found this gap empirically: measured headroom after a manual context-size
+fix came in tighter than a KV-only back-of-envelope estimate predicted). `parallel` is always fixed
+at `1` -- a single-user local device gets nothing from llama-server's default of 4 slots except a
+4x-smaller usable context for the same memory. KV cache type prefers `q8_0`, falling back to
+`q4_0` only when headroom is too tight for `q8_0` to reach the model's full trained context, and
+skipping quantization entirely (`cache_type_k`/`v` left `None`, llama-server's f16 default applies)
+when the model's head dimension doesn't divide evenly into the 32-element quantization block size
+-- confirmed against `vendor/llama.cpp/src/llama-context.cpp`'s own startup validation, which
+refuses to start rather than silently falling back itself.
+
+Every decision is written into `runtime.json`'s `llama_cpp.tuning` map with a plain-sentence
+reason (see CLAUDE.md's "Runtime parameters" convention) -- never computed and left untraceable. A
+sizing failure (the probe times out, a required hparam is missing from the log, memory can't be
+measured on this platform) raises `ModelSizingError`, which `run_pull_model` catches and logs as a
+warning: the model switch itself still succeeds, and the previous ctx_size/parallel/cache_type
+values are left exactly as they were rather than being overwritten with a guess.
 
 ## 4.6 Portability refactor: one service payload, three OS wrappers
 

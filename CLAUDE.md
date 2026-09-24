@@ -58,8 +58,9 @@ branch a commit lands on, it's what's true before it lands:
 ## Runtime parameters: always observable, locally and remotely
 
 Any parameter this project computes on the host's behalf rather than taking as an explicit
-user-specified value — today, whatever the ctx_size/parallel auto-sizing work (CUR-1965) lands as
-— must be visible two ways: from the device itself (`aipotluck-local-client status`) and over the
+user-specified value — today, `ctx_size`/`parallel`/`cache_type_k`/`cache_type_v`, auto-sized on
+every model switch by `aipotluck.installer.model_sizing` (CUR-1965's follow-up) — must be visible
+two ways: from the device itself (`aipotluck-local-client status`) and over the
 HTTP API a remote caller (the web UI, a support session, anything reaching the service through the
 tunnel) would use (`GET /status`'s `runtime_params` key; `GET /capabilities`'
 `current_install.runtime_params` too). Both today read the exact same function

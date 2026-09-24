@@ -45,6 +45,7 @@ from aipotluck.installer.model_pull import (  # noqa: E402
     list_cached_models,
     pull_model,
 )
+from aipotluck.installer.model_sizing import ModelSizingError, compute_sizing, probe_model_profile  # noqa: E402
 from aipotluck.installer.platform_detect import HostProfile, detect_host_profile  # noqa: E402
 from aipotluck.installer.service.base import get_service_manager  # noqa: E402
 from aipotluck.service.runner import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
@@ -350,7 +351,9 @@ def run_status(_args: argparse.Namespace) -> int:
     params = payload.get("runtime_params")
     if params:
         shown = ", ".join(
-            f"{field}={params[field]}" for field in ("ctx_size", "parallel", "gpu_layers") if params.get(field) is not None
+            f"{field}={params[field]}"
+            for field in ("ctx_size", "parallel", "gpu_layers", "cache_type_k", "cache_type_v")
+            if params.get(field) is not None
         )
         print(f"Runtime params: {shown or '(none set)'}")
         for field, reason in (params.get("tuning") or {}).items():
@@ -388,6 +391,29 @@ def run_pull_model(args: argparse.Namespace) -> int:
 
     llama_cfg["model_hf"] = args.model
     llama_cfg["model_path"] = None
+
+    print("Sizing runtime parameters for this model...")
+    try:
+        model_profile = probe_model_profile(
+            Path(llama_cfg["server_binary"]), model_hf=args.model, gpu_layers=llama_cfg.get("gpu_layers")
+        )
+        sizing = compute_sizing(model_profile)
+    except ModelSizingError as exc:
+        log.warning(
+            "Automatic runtime sizing failed (%s) -- keeping the previous ctx_size/parallel/"
+            "cache_type settings for this model.", exc,
+        )
+    else:
+        llama_cfg["ctx_size"] = sizing.ctx_size
+        llama_cfg["parallel"] = sizing.parallel
+        llama_cfg["cache_type_k"] = sizing.cache_type_k
+        llama_cfg["cache_type_v"] = sizing.cache_type_v
+        llama_cfg["tuning"] = {**llama_cfg.get("tuning", {}), **sizing.tuning}
+        print(
+            f"  ctx_size={sizing.ctx_size} parallel={sizing.parallel} "
+            f"cache_type_k={sizing.cache_type_k} cache_type_v={sizing.cache_type_v}"
+        )
+
     _save_runtime(runtime_path, runtime_config)
     log.info("Set %s as the active model in %s", args.model, runtime_path)
 

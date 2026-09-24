@@ -584,6 +584,67 @@ class TestRunPullModel:
         assert seen_kwargs["ctx_size"] == 8192
         assert seen_kwargs["gpu_layers"] == "all"
 
+    def test_successful_sizing_writes_ctx_size_parallel_and_cache_types(
+        self, tmp_path, fake_service_manager, monkeypatch
+    ):
+        install_dir = tmp_path / "install"
+        runtime_path = write_runtime(
+            install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}}
+        )
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: None)
+        fake_profile = object()
+        monkeypatch.setattr(cli, "probe_model_profile", lambda *a, **kw: fake_profile)
+        from aipotluck.installer.model_sizing import SizingResult
+
+        fake_sizing = SizingResult(
+            ctx_size=16384, parallel=1, cache_type_k="q8_0", cache_type_v="q8_0",
+            tuning={"ctx_size": "test reason", "parallel": "test reason", "cache_type_k": "test reason", "cache_type_v": "test reason"},
+        )
+        monkeypatch.setattr(cli, "compute_sizing", lambda profile: fake_sizing)
+        args = make_pull_args(install_dir, model="new/model:Q8_0")
+
+        rc = cli.run_pull_model(args)
+
+        assert rc == 0
+        saved = json.loads(runtime_path.read_text())
+        assert saved["llama_cpp"]["ctx_size"] == 16384
+        assert saved["llama_cpp"]["parallel"] == 1
+        assert saved["llama_cpp"]["cache_type_k"] == "q8_0"
+        assert saved["llama_cpp"]["cache_type_v"] == "q8_0"
+        assert saved["llama_cpp"]["tuning"]["ctx_size"] == "test reason"
+
+    def test_sizing_failure_still_activates_the_model_keeping_previous_runtime_params(
+        self, tmp_path, fake_service_manager, monkeypatch
+    ):
+        # A nice-to-have auto-tune layer failing (e.g. the probe times out, or this platform can't
+        # measure memory) must not block the actual model switch -- the pull already succeeded.
+        install_dir = tmp_path / "install"
+        runtime_path = write_runtime(
+            install_dir,
+            {
+                "llama_cpp": {
+                    "server_binary": "/fake/llama-server", "ctx_size": 4096, "parallel": 4,
+                },
+                "service": {},
+            },
+        )
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: None)
+
+        def raise_sizing_error(*a, **kw):
+            raise cli.ModelSizingError("probe timed out")
+
+        monkeypatch.setattr(cli, "probe_model_profile", raise_sizing_error)
+        args = make_pull_args(install_dir, model="new/model:Q8_0")
+
+        rc = cli.run_pull_model(args)
+
+        assert rc == 0  # the model switch itself still succeeds
+        saved = json.loads(runtime_path.read_text())
+        assert saved["llama_cpp"]["model_hf"] == "new/model:Q8_0"  # activation still happened
+        assert saved["llama_cpp"]["ctx_size"] == 4096  # untouched, not clobbered with a guess
+        assert saved["llama_cpp"]["parallel"] == 4
+        fake_service_manager.start.assert_called_once()  # service restart still happens
+
 
 class TestRunListModels:
     def test_lists_cached_models_and_marks_the_active_one(self, tmp_path, monkeypatch, capsys):

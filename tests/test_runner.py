@@ -99,6 +99,27 @@ class TestBuildLlamaServerArgs:
         )
         assert "--parallel" not in args
 
+    def test_cache_types_passed_through_when_set(self):
+        args = runner.build_llama_server_args(
+            {"host": "127.0.0.1", "port": 8080, "model_hf": "x", "cache_type_k": "q8_0", "cache_type_v": "q8_0"}
+        )
+        assert "--cache-type-k" in args and "q8_0" in args
+        assert "--cache-type-v" in args and "q8_0" in args
+
+    def test_cache_types_omitted_when_unset_leaves_llama_servers_own_f16_default(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "model_hf": "x"})
+        assert "--cache-type-k" not in args
+        assert "--cache-type-v" not in args
+
+    def test_cache_types_can_differ_between_k_and_v(self):
+        args = runner.build_llama_server_args(
+            {"host": "127.0.0.1", "port": 8080, "model_hf": "x", "cache_type_k": "q8_0", "cache_type_v": "q4_0"}
+        )
+        k_idx = args.index("--cache-type-k")
+        v_idx = args.index("--cache-type-v")
+        assert args[k_idx + 1] == "q8_0"
+        assert args[v_idx + 1] == "q4_0"
+
 
 class TestRuntimeParamsWiring:
     """runtime_params' own logic (field extraction, tuning passthrough) is tested where it's
