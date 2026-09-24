@@ -370,16 +370,11 @@ def run_status(_args: argparse.Namespace) -> int:
         if not models:
             print("Sized models: (none yet -- `pull` a model to size it)")
         else:
-            print(f"Sized models ({len(models)}):")
-            for model_id, model_params in models.items():
-                shown = ", ".join(
-                    f"{field}={model_params[field]}"
-                    for field in ("ctx_size", "parallel", "cache_type_k", "cache_type_v")
-                    if model_params.get(field) is not None
-                )
-                print(f"  {model_id}: {shown}")
-                for field, reason in (model_params.get("tuning") or {}).items():
-                    print(f"    {field}: auto -- {reason}")
+            # One line, same convention as the llama-server/Tunnel lines above -- the full
+            # per-model reasoning (the "tuning" reasons) is deliberately left out here; read it
+            # from GET /capabilities when you actually need it.
+            shown = {model_id: {k: v for k, v in mp.items() if k != "tuning"} for model_id, mp in models.items()}
+            print(f"Sized models: {shown}")
 
     return 0
 

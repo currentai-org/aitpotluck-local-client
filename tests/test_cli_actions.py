@@ -433,9 +433,36 @@ class TestRunStatus:
 
         out = capsys.readouterr().out
         assert "Router params: gpu_layers=auto, models_max=1" in out
-        assert "org/repo:Q4_K_M: ctx_size=32768, parallel=1" in out
+        assert "Sized models: {'org/repo:Q4_K_M': {'ctx_size': '32768', 'parallel': '1'}}" in out
 
-    def test_runtime_params_tuning_reasons_are_shown(self, monkeypatch, capsys):
+    def test_sized_models_is_exactly_one_line_per_the_tunnel_status_convention(self, monkeypatch, capsys):
+        # Same terse "one line, raw dict" shape as the llama-server/Tunnel lines above it --
+        # multiple models must never spill onto their own separate lines.
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": None,
+            "runtime_params": {
+                "gpu_layers": "auto", "models_max": 1,
+                "models": {
+                    "org/a:Q4_K_M": {"ctx_size": "8192", "parallel": "1", "tuning": {}},
+                    "org/b:Q8_0": {"ctx_size": "4096", "parallel": "1", "tuning": {}},
+                },
+            },
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        sized_lines = [line for line in out.splitlines() if line.startswith("Sized models")]
+        assert len(sized_lines) == 1
+        assert "org/a:Q4_K_M" in sized_lines[0] and "org/b:Q8_0" in sized_lines[0]
+
+    def test_tuning_reasons_are_omitted_from_status_output(self, monkeypatch, capsys):
+        # The CLI's `status` is deliberately terse (one line, like the Tunnel/llama-server lines
+        # above it) -- the per-field "why" reasoning is real and useful, but belongs in
+        # GET /capabilities, not in a quick-glance status line.
         payload = {
             "logged_in": True,
             "llama_server": {"pid": 1, "running": True},
@@ -458,8 +485,9 @@ class TestRunStatus:
         cli.run_status(None)
 
         out = capsys.readouterr().out
-        assert "ctx_size: auto -- capped by available memory" in out
-        assert "parallel: auto -- reduced from the default to maximize single-request context" in out
+        assert "capped by available memory" not in out
+        assert "reduced from the default to maximize single-request context" not in out
+        assert "tuning" not in out
 
     def test_runtime_params_absent_prints_nothing(self, monkeypatch, capsys):
         # Old service builds predating runtime_params -- must not crash on a missing key.
