@@ -243,28 +243,36 @@ The file is entirely optional -- a checkout without one (or with an empty
 `assets` map) just falls through to a real source build every time, exactly
 as if this feature didn't exist.
 
-To add an entry after building on a new host:
+To add an entry after building on a new host, `scripts/package_custom_build.py`
+is the standardized tool for this (written up front to be reused, not a
+one-off) -- run it right after the installer finishes a real source build
+there:
 
-1. Run the installer there (`--no-service` is fine for this) and let it
-   finish a real source build.
-2. Package the *contents* of the build's `bin/` directory into a flat
-   top-level `llama-<tag>/` directory, `tar.gz`'d -- this matches upstream's
-   own release archive layout exactly (`llama-b10989/llama-server`,
-   `llama-b10989/libggml-cuda.so.0`, etc., no nested `bin/`), so
-   `fetch.find_binary`'s recursive search works unchanged either way:
-   ```bash
-   cd /path/to/llama.cpp-build
-   mkdir /tmp/llama-<tag> && cp -a bin/. /tmp/llama-<tag>/
-   tar -czf llama-<tag>-bin-<key>.tar.gz -C /tmp llama-<tag>
-   sha256sum llama-<tag>-bin-<key>.tar.gz
-   ```
-   This only works because the build sets `CMAKE_INSTALL_RPATH=$ORIGIN` (see
-   above) -- without it, the packaged binary would only work from the exact
-   path it was originally built at.
-3. Upload the archive as an asset on a GitHub release of this repo (a
-   `custom-builds` tag, reused across entries as more platforms are added).
-4. Add an entry to `llama_custom_builds.json` under that key, with the file
-   name and the sha256 from step 2.
+```bash
+python3 scripts/package_custom_build.py --build-dir /path/to/llama.cpp-build
+```
+
+It stages the build's `bin/` directory into a flat top-level `llama-<tag>/`
+directory (matching upstream's own release archive layout exactly --
+`llama-b10989/llama-server`, `llama-b10989/libggml-cuda.so.0`, etc., no
+nested `bin/` -- confirmed against a real llama.cpp release tarball), then
+**verifies relocatability for real**: copies the staged directory to a fresh
+path elsewhere and actually runs `llama-server --list-devices` from there,
+refusing to package anything that fails (a real safeguard, not a formality
+-- this exact project shipped a non-relocatable build once, and that failure
+mode is a dynamic-linker error at runtime, not something a "did cmake
+configure OK" check would ever catch). Tag and cache key both default to
+sensible values (the pinned tag from `llama_version.json`; the key
+auto-derived from *this host's own* detected profile via the same code
+`build_cache.py` uses to look one up) -- override with `--tag`/`--key` only
+when packaging on behalf of a different host than the one you're running on.
+
+It prints the exact next two steps: the `gh release upload`/`create`
+command, and the JSON snippet to add to `llama_custom_builds.json` (file
+name + sha256, computed for you) -- both ready to copy-paste. Uploading the
+release asset is a real publish to this project's public repo, so that step
+is left as something a person runs deliberately, not something the script
+does on its own.
 
 After install, the service:
 
@@ -406,8 +414,11 @@ instead. Covers `platform_detect.py` (including glibc/CUDA-compute-capability de
 lookup, `layout.py`, `cli.py` (including the argparse regression -- see `test_cli_argparse.py`'s
 docstring), `cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `install.py`'s
 `--no-service`/source-build/binary-cache/real install paths, `service/runner.py`'s login-gating,
-`/status` secret redaction and the real-HTTP `/capabilities` route, and `diagnostics.py`'s
-per-section failure isolation.
+`/status` secret redaction and the real-HTTP `/capabilities` route, `diagnostics.py`'s per-section
+failure isolation, and `scripts/package_custom_build.py`'s real relocatability check (a real fake
+`llama-server` script, copied to a real different path and actually executed -- the same reasoning
+as `test_model_pull.py`/`test_source_build.py`'s real-subprocess tests: this check exists
+specifically to catch a failure mode a static/mocked check would miss).
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
@@ -455,6 +466,8 @@ aipotluck/                      the root package everything below lives under
 packaging/
   windows/install.ps1             Windows bootstrapper (installs Python if missing, then installs)
   windows|macos|linux/README.md   per-OS implementation notes
+scripts/
+  package_custom_build.py         standardized custom-binary-cache packaging tool (see "Building from source")
 tests/                            unit tests -- see "Tests" above
 ARCHITECTURE.md                  full design doc
 ```
