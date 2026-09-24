@@ -178,7 +178,17 @@ def probe_model_profile(
     # compute_sizing) -- probing at the same slot count the real deployment will use keeps this
     # representative, though unlike the live-memory design this replaced, the memory budget below
     # no longer depends on anything measured during this probe.
-    cmd = [str(server_binary), "--host", host, "--port", str(port), "--ctx-size", str(_PROBE_CTX_SIZE), "--parallel", "1"]
+    # --verbose: confirmed live against a real device (CUR-1965) that llama-server's print_info:
+    # hparam lines (n_ctx_train, n_embd_k_gqa, ...) this probe depends on are gated behind a
+    # verbosity threshold NOT met at default settings on at least one real build -- the vendored
+    # source's LOG_DEFAULT_LLAMA constant suggested INFO-level would print by default, but that
+    # didn't hold in practice. --verbose ("set verbosity to infinity") is the one setting
+    # guaranteed to surface them regardless of what a given build's default threshold happens to
+    # be, so the probe always passes it rather than relying on a default that's proven unreliable.
+    cmd = [
+        str(server_binary), "--host", host, "--port", str(port), "--ctx-size", str(_PROBE_CTX_SIZE),
+        "--parallel", "1", "--verbose",
+    ]
     if model_path:
         cmd += ["--model", str(model_path)]
     else:

@@ -49,6 +49,7 @@ FAKE_SERVER_SCRIPT = textwrap.dedent(
     parser.add_argument("--ctx-size")
     parser.add_argument("--parallel")
     parser.add_argument("--gpu-layers")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--fail", action="store_true")
     parser.add_argument("--hang", action="store_true")
     parser.add_argument("--omit-hparams", action="store_true")
@@ -148,6 +149,23 @@ class TestParseHelpers:
 
 
 class TestProbeModelProfile:
+    def test_passes_verbose_so_print_info_lines_are_never_gated_out(self, fake_server_binary, monkeypatch):
+        # CUR-1965, found live against a real device: at least one real llama-server build gates
+        # its print_info: hparam lines behind a verbosity threshold not met at default settings --
+        # the vendored source alone didn't predict this. --verbose is the one setting guaranteed
+        # to surface them regardless of a given build's default threshold.
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.5)
+        real_popen = subprocess.Popen
+        seen_cmds = []
+
+        def _capture_popen(cmd, *args, **kwargs):
+            seen_cmds.append(cmd)
+            return real_popen(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(model_sizing.subprocess, "Popen", _capture_popen)
+        probe_model_profile(fake_server_binary, model_hf="org/model:Q4_K_M")
+        assert seen_cmds and "--verbose" in seen_cmds[0]
+
     def test_returns_a_profile_parsed_from_the_real_server_output(self, fake_server_binary, monkeypatch):
         monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.5)
         profile = probe_model_profile(fake_server_binary, model_hf="org/model:Q4_K_M")
