@@ -309,6 +309,14 @@ def _configure(source_dir: Path, build_dir: Path, *, cuda_arch: str | None, cmak
         "-DLLAMA_BUILD_TESTS=OFF",
         "-DLLAMA_BUILD_EXAMPLES=OFF",
         "-DLLAMA_OPENSSL=ON",
+        # Relocatable $ORIGIN rpath, matching llama.cpp's own release CI exactly (release.yml's
+        # ubuntu-cuda job). Without this, cmake's default rpath points at this exact build_dir's
+        # absolute path -- the binary works fine built-and-run in place (which is all a plain
+        # from-source install ever does), but silently breaks the moment bin/ is archived and
+        # extracted somewhere else, e.g. into a *different* host's install root, or packaged as a
+        # custom binary-cache asset (build_cache.py) for reuse on another machine entirely.
+        "-DCMAKE_INSTALL_RPATH=$ORIGIN",
+        "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
     ]
     if cuda_arch:
         args += ["-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}"]

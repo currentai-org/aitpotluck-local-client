@@ -217,6 +217,19 @@ class TestBuildLlamaServer:
         assert binary.name == "llama-server"
         assert binary.exists()
 
+    def test_configure_sets_a_relocatable_origin_rpath(self, tmp_path, fake_cmake):
+        # Without this, the binary only works from the exact absolute path it was built at --
+        # fine for a normal in-place source build, but silently broken the moment bin/ is
+        # archived and extracted somewhere else (a different install root, a different host
+        # entirely via the custom binary cache).
+        source_dir = tmp_path / "src"
+        build_dir = tmp_path / "build"
+        source_dir.mkdir()
+        sb.build_llama_server(source_dir, build_dir, fingerprint="x", cmake_binary=str(fake_cmake))
+        marker = (build_dir / "configured.marker").read_text(encoding="utf-8")
+        assert "-DCMAKE_INSTALL_RPATH=$ORIGIN" in marker
+        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" in marker
+
     def test_passes_cuda_flags_through_at_configure_time(self, tmp_path, fake_cmake):
         source_dir = tmp_path / "src"
         build_dir = tmp_path / "build"
