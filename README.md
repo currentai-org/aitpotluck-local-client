@@ -268,9 +268,20 @@ To add an entry after building on a new host:
 
 After install, the service:
 
-- Exposes a health check at `http://127.0.0.1:8765/healthz` and detailed
+- Exposes a health check at `http://127.0.0.1:8765/healthz`, detailed
   status (including live llama-server supervisor state) at
-  `http://127.0.0.1:8765/status`.
+  `http://127.0.0.1:8765/status`, and a full system/capability fingerprint
+  at `http://127.0.0.1:8765/capabilities` -- OS/distro, arch, glibc
+  version, CPU/memory/disk, GPU backend + CUDA compute capability, every
+  build tool `source_build.py` checks for, and the actual install strategy
+  this device would resolve to right now (upstream asset vs. our own binary
+  cache vs. a real source build, and why) alongside what's *currently*
+  installed. Built from the exact same detection code the installer itself
+  uses (`aipotluck/diagnostics.py`), so this is a live, remotely-queryable
+  answer to "what would happen if I reinstalled this right now" -- useful
+  for diagnosing a device that's already in a broken state, since every
+  section degrades independently (`{"error": ...}`) rather than the whole
+  endpoint failing if one probe does.
 - **Actively supervises `llama-server`**: starts it on service startup,
   polls `/health` every 5s, and restarts it automatically on crash with
   exponential backoff (1s, 2s, 5s, 10s, 20s, 30s, 60s -- resets if the
@@ -394,8 +405,9 @@ instead. Covers `platform_detect.py` (including glibc/CUDA-compute-capability de
 `build_strategy.py`'s prebuilt-vs-source-build decision, `build_cache.py`'s custom-binary-cache
 lookup, `layout.py`, `cli.py` (including the argparse regression -- see `test_cli_argparse.py`'s
 docstring), `cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `install.py`'s
-`--no-service`/source-build/binary-cache/real install paths, and `service/runner.py`'s login-gating
-and `/status` secret redaction.
+`--no-service`/source-build/binary-cache/real install paths, `service/runner.py`'s login-gating,
+`/status` secret redaction and the real-HTTP `/capabilities` route, and `diagnostics.py`'s
+per-section failure isolation.
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
@@ -415,6 +427,7 @@ install.sh                     public one-line installer entry point (Linux/macO
 install.ps1                    public one-line installer entry point (Windows)
 pyproject.toml                  packaging metadata -- console-script entries for a `pip install .` path only
 aipotluck/                      the root package everything below lives under
+  diagnostics.py                 GET /capabilities fingerprint -- reuses installer/ detection code
   installer/
     install.py                    installer CLI entry point -- always produces a logged-out install
     cli.py                         login/logout/status CLI for an already-installed device
