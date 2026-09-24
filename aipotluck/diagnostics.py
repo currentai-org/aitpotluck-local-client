@@ -204,6 +204,30 @@ def _install_strategy_info(profile: HostProfile) -> dict[str, Any]:
     }
 
 
+_RUNTIME_PARAM_FIELDS = ("ctx_size", "gpu_layers", "parallel", "host", "port", "model_hf", "model_path")
+
+
+def runtime_params(runtime_config: dict[str, Any]) -> dict[str, Any]:
+    """A clean, explicit view of the llama-server parameters actually in effect right now, plus
+    -- for any of them that were computed rather than defaulted or user-specified -- WHY, via the
+    optional `llama_cpp.tuning` map runtime.json can carry: {param_name: "reason string"}. A
+    param's absence from `tuning` means it's a static default or an explicit user override, not
+    that nothing is known about it.
+
+    This is the traceability surface CLAUDE.md's "Runtime parameters" convention requires: any
+    runtime parameter this project computes automatically (the auto-sizing feature this is
+    groundwork for writes into `tuning`) must be visible here -- and only here. GET /status
+    (`aipotluck/service/runner.py`, which imports this exact function rather than a copy) and
+    `aipotluck-local-client status` both surface this dict as-is, and /capabilities' current_install
+    section below embeds it too -- local and remote read the same source, never a second one that
+    could drift from it.
+    """
+    llama_cfg = runtime_config.get("llama_cpp") or {}
+    params = {field: llama_cfg.get(field) for field in _RUNTIME_PARAM_FIELDS}
+    params["tuning"] = llama_cfg.get("tuning") or {}
+    return params
+
+
 def _current_install_info(runtime_config: dict[str, Any]) -> dict[str, Any]:
     llama_cfg = runtime_config.get("llama_cpp") or {}
     return {
@@ -213,6 +237,7 @@ def _current_install_info(runtime_config: dict[str, Any]) -> dict[str, Any]:
         "server_binary": llama_cfg.get("server_binary"),
         "server_binary_exists": Path(llama_cfg["server_binary"]).exists() if llama_cfg.get("server_binary") else None,
         "logged_in": bool(runtime_config.get("logged_in")),
+        "runtime_params": runtime_params(runtime_config),
     }
 
 

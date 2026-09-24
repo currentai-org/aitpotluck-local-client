@@ -416,6 +416,54 @@ class TestRunStatus:
         out = capsys.readouterr().out
         assert "WARNING" not in out
 
+    def test_runtime_params_are_shown(self, monkeypatch, capsys):
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": None,
+            "runtime_params": {"ctx_size": 32768, "parallel": 1, "gpu_layers": "auto", "tuning": {}},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "Runtime params: ctx_size=32768, parallel=1, gpu_layers=auto" in out
+
+    def test_runtime_params_tuning_reasons_are_shown(self, monkeypatch, capsys):
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": None,
+            "runtime_params": {
+                "ctx_size": 32768,
+                "parallel": 1,
+                "gpu_layers": None,
+                "tuning": {
+                    "ctx_size": "capped by available memory",
+                    "parallel": "reduced from the default to maximize single-request context",
+                },
+            },
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "ctx_size: auto -- capped by available memory" in out
+        assert "parallel: auto -- reduced from the default to maximize single-request context" in out
+
+    def test_runtime_params_absent_prints_nothing(self, monkeypatch, capsys):
+        # Old service builds predating runtime_params -- must not crash on a missing key.
+        payload = {"logged_in": True, "llama_server": {"pid": 1, "running": True}, "tunnel": None}
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        rc = cli.run_status(None)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Runtime params" not in out
+
     def test_logged_in_but_llama_supervisor_errored_is_surfaced(self, monkeypatch, capsys):
         payload = {
             "logged_in": True,

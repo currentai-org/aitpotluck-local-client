@@ -100,6 +100,37 @@ class TestBuildLlamaServerArgs:
         assert "--parallel" not in args
 
 
+class TestRuntimeParamsWiring:
+    """runtime_params' own logic (field extraction, tuning passthrough) is tested where it's
+    actually defined -- test_diagnostics.py. What belongs here is proving GET /status really
+    calls the real, shared implementation (runner.py imports it from diagnostics.py rather than
+    keeping a second copy -- see CLAUDE.md's "Runtime parameters" convention for why that matters)."""
+
+    def test_result_flows_into_the_real_status_endpoint(self, tmp_path):
+        # Not mocked -- a real HTTP GET against a real running server, proving runtime_params is
+        # actually wired into /status and not just correct in isolation.
+        import json
+        import urllib.request
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "runtime.json").write_text(
+            json.dumps({"logged_in": False, "llama_cpp": {"ctx_size": 16384, "tuning": {"ctx_size": "auto: test"}}}),
+            encoding="utf-8",
+        )
+        svc = runner.AipotluckServiceRunner(host="127.0.0.1", port=0, config_dir=config_dir, log_dir=None)
+        try:
+            svc.start()
+            port = svc._server.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=5) as resp:
+                body = json.loads(resp.read())
+        finally:
+            svc.stop(timeout=2)
+
+        assert body["runtime_params"]["ctx_size"] == 16384
+        assert body["runtime_params"]["tuning"] == {"ctx_size": "auto: test"}
+
+
 class TestBuildSupervisor:
     def test_returns_none_without_llama_cpp_section(self, caplog):
         with caplog.at_level(logging.ERROR, logger="aipotluck.service"):

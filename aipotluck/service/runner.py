@@ -39,6 +39,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from aipotluck import diagnostics  # noqa: E402
+from aipotluck.diagnostics import runtime_params  # noqa: E402, F401 -- re-exported, see below
 from aipotluck.service.llama_supervisor import LlamaSupervisor  # noqa: E402
 from aipotluck.service.newt_supervisor import NewtSupervisor  # noqa: E402
 
@@ -190,6 +191,7 @@ class _StatusHandler(BaseHTTPRequestHandler):
                     "status": "running",
                     "logged_in": logged_in,
                     "runtime_config": self._redacted_runtime_config(self.runner.runtime_config),
+                    "runtime_params": runtime_params(self.runner.runtime_config),
                     "llama_server": llama_info,
                     "tunnel": tunnel_info,
                 }

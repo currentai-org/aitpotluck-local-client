@@ -55,6 +55,44 @@ def _stable_environment(monkeypatch):
     monkeypatch.setattr(diag.build_cache, "load_custom_manifest", lambda path: {"assets": {}})
 
 
+class TestRuntimeParams:
+    """The traceability surface CLAUDE.md's "Runtime parameters" convention requires: any
+    automatically-computed runtime parameter (ctx_size/parallel, per CUR-1965's auto-sizing
+    groundwork) must be readable from one real place, not reconstructed per-consumer."""
+
+    def test_extracts_the_known_fields(self):
+        params = diag.runtime_params(
+            {"llama_cpp": {"ctx_size": 32768, "parallel": 1, "gpu_layers": "auto", "host": "127.0.0.1", "port": 8080}}
+        )
+        assert params["ctx_size"] == 32768
+        assert params["parallel"] == 1
+        assert params["gpu_layers"] == "auto"
+
+    def test_missing_llama_cpp_section_is_all_nones_not_a_crash(self):
+        params = diag.runtime_params({})
+        assert params["ctx_size"] is None
+        assert params["tuning"] == {}
+
+    def test_tuning_passed_through_when_present(self):
+        params = diag.runtime_params(
+            {"llama_cpp": {"ctx_size": 32768, "tuning": {"ctx_size": "capped by available memory"}}}
+        )
+        assert params["tuning"] == {"ctx_size": "capped by available memory"}
+
+    def test_tuning_absent_is_an_empty_dict_not_none(self):
+        # Callers (CLI, HTTP consumers) should be able to iterate this unconditionally.
+        params = diag.runtime_params({"llama_cpp": {"ctx_size": 4096}})
+        assert params["tuning"] == {}
+
+    def test_embedded_in_current_install_info(self):
+        fp = diag.gather_fingerprint(
+            config_dir=None,
+            runtime_config={"llama_cpp": {"ctx_size": 32768, "tuning": {"ctx_size": "auto: test reason"}}},
+        )
+        assert fp["current_install"]["runtime_params"]["ctx_size"] == 32768
+        assert fp["current_install"]["runtime_params"]["tuning"] == {"ctx_size": "auto: test reason"}
+
+
 class TestGatherFingerprintShape:
     def test_top_level_sections_present(self):
         fp = diag.gather_fingerprint(config_dir=None, runtime_config=None)

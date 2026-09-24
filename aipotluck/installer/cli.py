@@ -342,6 +342,20 @@ def run_status(_args: argparse.Namespace) -> int:
             )
     else:
         print("Tunnel:       " + ("not running (unexpected while logged in)" if logged_in else "stopped (logged out)"))
+
+    # See CLAUDE.md's "Runtime parameters" convention: anything this project computes
+    # automatically (not just what the user passed at install time) must be traceable here, not
+    # just over HTTP -- this reads the exact same `runtime_params` GET /status already returns,
+    # never a second, potentially-drifting summary of it.
+    params = payload.get("runtime_params")
+    if params:
+        shown = ", ".join(
+            f"{field}={params[field]}" for field in ("ctx_size", "parallel", "gpu_layers") if params.get(field) is not None
+        )
+        print(f"Runtime params: {shown or '(none set)'}")
+        for field, reason in (params.get("tuning") or {}).items():
+            print(f"  {field}: auto -- {reason}")
+
     return 0
 
 
