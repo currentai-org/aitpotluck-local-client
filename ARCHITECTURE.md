@@ -304,7 +304,13 @@ now:
   (SIGTERM, 15s grace period, then SIGKILL) before exiting.
 - Exposes live state via `LlamaProcessInfo` (pid, running, healthy,
   restart_count, last_exit_code) surfaced at `GET /status` on the aipotluck
-  service's own HTTP endpoint (port 8765).
+  service's own HTTP endpoint (port 8765). A third endpoint, `GET
+  /capabilities` (`aipotluck/diagnostics.py`), reports a full system/capability
+  fingerprint built from the same detection code the installer itself uses
+  (`platform_detect`/`build_strategy`/`build_cache`/`source_build`) -- OS,
+  arch, glibc, CPU/memory/disk, GPU backend + CUDA compute capability, every
+  build tool, and the install strategy this device would resolve to right
+  now vs. what's actually installed. See section 3.2.1 above.
 
 Two-tier self-healing, confirmed by test:
 1. systemd `Restart=always` / launchd `KeepAlive` / Windows Service restarts
