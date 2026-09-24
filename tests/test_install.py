@@ -137,6 +137,73 @@ class TestRunInstallNoService:
         assert "CLI:" not in out
 
 
+class TestRunInstallCustomBuildCache:
+    def _cache_hit(self, monkeypatch, tmp_path, *, key="linux-x64-cuda-sm87"):
+        server_binary = tmp_path / "custom_extracted" / "llama-server"
+        server_binary.parent.mkdir(parents=True, exist_ok=True)
+        server_binary.write_text("#!/bin/sh\n")
+
+        monkeypatch.setattr(
+            install, "detect_host_profile",
+            lambda backend: HostProfile(os_name="linux", arch="x64", backend="cuda"),
+        )
+        monkeypatch.setattr(install.fetch, "load_version_manifest", lambda path: {"tag": "b10989"})
+        monkeypatch.setattr(
+            install.build_strategy, "resolve_install_strategy",
+            lambda profile, manifest: install.build_strategy.InstallStrategy(
+                use_source_build=True, reason="no published asset", cuda_arch="87"
+            ),
+        )
+        monkeypatch.setattr(
+            install.build_cache, "load_custom_manifest",
+            lambda path: {"tag": "custom-builds", "assets": {key: {"file": "f.tar.gz", "sha256": "abc"}}},
+        )
+        monkeypatch.setattr(install.fetch, "download_asset", lambda manifest, entry, dest_dir: tmp_path / "f.tar.gz")
+        monkeypatch.setattr(
+            install.fetch, "extract_archive", lambda archive, root, tag, asset_key: server_binary.parent
+        )
+        monkeypatch.setattr(install.fetch, "find_binary", lambda extract_dir, stem: server_binary)
+        return server_binary
+
+    def test_cache_hit_skips_compilation_entirely(self, tmp_path, monkeypatch):
+        server_binary = self._cache_hit(monkeypatch, tmp_path)
+        ensure_built = MagicMock()
+        monkeypatch.setattr(install.source_build, "ensure_llama_server_built", ensure_built)
+        check_prereqs = MagicMock()
+        monkeypatch.setattr(install.source_build, "check_build_prerequisites", check_prereqs)
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        ensure_built.assert_not_called()
+        check_prereqs.assert_not_called()  # no preflight either -- a cache hit isn't a build at all
+        saved = json.loads((tmp_path / "install" / "config" / "runtime.json").read_text())
+        assert saved["llama_cpp"]["server_binary"] == str(server_binary)
+        assert saved["llama_cpp"]["asset_key"] == "custom-build:linux-x64-cuda-sm87"
+        assert saved["llama_cpp"]["built_from_source"] is False  # downloaded, not compiled on this host
+
+    def test_cache_hit_ignores_no_source_build_flag(self, tmp_path, monkeypatch):
+        # --no-source-build means "don't compile"; a cache download isn't a compile, so it must
+        # still succeed even with this flag set.
+        self._cache_hit(monkeypatch, tmp_path)
+        args = make_args(tmp_path / "install", ["--no-service", "--no-source-build"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+
+    def test_no_cache_entry_falls_through_to_a_real_build(self, tmp_path, fake_source_build, monkeypatch):
+        _, ensure_built = fake_source_build
+        monkeypatch.setattr(install.build_cache, "load_custom_manifest", lambda path: {"assets": {}})
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        ensure_built.assert_called_once()
+
+
 class TestRunInstallSourceBuild:
     def test_builds_from_source_and_records_it_in_runtime_config(self, tmp_path, fake_source_build):
         server_binary, ensure_built = fake_source_build

@@ -11,12 +11,15 @@ Flow:
        Jetson-class arm64+CUDA board: nvidia-smi is real there, but no linux-arm64-cuda asset is
        ever published upstream, and even the linux-arm64-cpu asset needs a newer glibc than
        JetPack ships. See build_strategy.py's module docstring for the confirmed evidence.
-    3a. Prebuilt path: download (cached, checksum-verified) + extract it.
-    3b. Source-build path: check the host actually has what a build needs; for the apt-fixable
-        gaps (cmake/git/compiler/OpenSSL headers -- never the CUDA toolkit), offer to install them
-        via sudo with explicit consent (--allow-apt-install, or an interactive y/N prompt -- never
-        unconditionally), then configure + build llama-server from vendor/llama.cpp
-        (source_build.py).
+    3a. Prebuilt (upstream) path: download (cached, checksum-verified) + extract it.
+    3b. Prebuilt (our own cache) path: when no upstream asset is viable, check our own
+        llama_custom_builds.json for a binary already built for this exact host/backend/GPU
+        architecture combination (build_cache.py) -- skips compiling entirely on a repeat match.
+    3c. Source-build path: only when neither of the above matches. Check the host actually has
+        what a build needs; for the apt-fixable gaps (cmake/git/compiler/OpenSSL headers -- never
+        a GPU vendor toolchain), offer to install them via sudo with explicit consent
+        (--allow-apt-install, or an interactive y/N prompt -- never unconditionally), then
+        configure + build llama-server from vendor/llama.cpp (source_build.py).
     4. Write runtime.json pointing at the resolved llama-server binary.
     5. Install our blank Python service via the OS-native service manager.
     6. Install the `aipotluck-local-client` CLI shim onto PATH (see install_cli_shim below).
@@ -34,7 +37,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from aipotluck.installer import build_strategy, fetch, layout, source_build
+from aipotluck.installer import build_cache, build_strategy, fetch, layout, source_build
 from aipotluck.installer.platform_detect import HostProfile, detect_host_profile
 from aipotluck.installer.python_bootstrap import PythonNotFoundError, ensure_python
 from aipotluck.installer.service.base import ServiceState, get_service_manager
@@ -178,61 +181,83 @@ def run_install(args: argparse.Namespace) -> int:
         log.info("Overriding pinned tag -> %s", args.tag)
 
     strategy = build_strategy.resolve_install_strategy(profile, manifest)
+    used_source_build = False
     if strategy.use_source_build:
-        log.info("No viable prebuilt asset for this host (%s) -- building llama-server from source", strategy.reason)
-        if args.no_source_build:
-            log.error(
-                "--no-source-build set; refusing to build (%s). Drop that flag to let the "
-                "installer build llama-server from source instead.", strategy.reason,
+        custom_manifest_path = REPO_ROOT / "llama_custom_builds.json"
+        custom_manifest = build_cache.load_custom_manifest(custom_manifest_path)
+        custom_match = build_cache.find_custom_build(profile, custom_manifest, cuda_arch=strategy.cuda_arch)
+
+        if custom_match is not None:
+            custom_key, custom_entry = custom_match
+            log.info(
+                "No viable upstream asset for this host (%s), but a cached custom build exists "
+                "(%s) -- skipping compilation", strategy.reason, custom_key,
             )
-            return 1
-        if profile.backend == "cuda" and strategy.cuda_arch is None:
-            log.error(
-                "CUDA backend requested/detected but the GPU's compute capability could not be "
-                "determined (checked `nvidia-smi --query-gpu=compute_cap`) -- can't safely pick a "
-                "CMAKE_CUDA_ARCHITECTURES value. Check nvidia-smi works, or pass --backend cpu."
+            archive_path = fetch.download_asset(custom_manifest, custom_entry, lay.state_dir / "downloads")
+            llama_dir = fetch.extract_archive(
+                archive_path, lay.install_root / "llama.cpp", custom_manifest["tag"], custom_key
             )
-            return 1
-
-        problems = source_build.check_build_prerequisites(backend=profile.backend)
-        if problems:
-            apt_packages = source_build.missing_apt_packages() if not args.no_apt_install else []
-            if apt_packages and source_build.has_apt() and (
-                args.allow_apt_install or _confirm_apt_install(apt_packages)
-            ):
-                try:
-                    source_build.install_apt_packages(apt_packages)
-                except source_build.AptInstallError as exc:
-                    log.error("Installing dependencies failed: %s", exc)
-                    return 1
-                problems = source_build.check_build_prerequisites(backend=profile.backend)
-
-        if problems:
-            log.error("Can't build llama-server from source -- missing prerequisites:")
-            for problem in problems:
-                log.error("  - %s", problem)
-            log.error("Install the above, then re-run this installer.")
-            return 1
-
-        free_gb = source_build.check_free_disk_gb(lay.install_root)
-        if free_gb is not None and free_gb < source_build.MIN_FREE_DISK_GB:
-            log.error(
-                "Only %.1fGB free at %s; a from-source build needs roughly %dGB. Free up space "
-                "and re-run.", free_gb, lay.install_root, source_build.MIN_FREE_DISK_GB,
+            server_bin = fetch.find_binary(llama_dir, "llama-server")
+            asset_key = f"custom-build:{custom_key}"
+        else:
+            log.info(
+                "No viable prebuilt asset for this host (%s) -- building llama-server from source",
+                strategy.reason,
             )
-            return 1
+            if args.no_source_build:
+                log.error(
+                    "--no-source-build set; refusing to build (%s). Drop that flag to let the "
+                    "installer build llama-server from source instead.", strategy.reason,
+                )
+                return 1
+            if profile.backend == "cuda" and strategy.cuda_arch is None:
+                log.error(
+                    "CUDA backend requested/detected but the GPU's compute capability could not be "
+                    "determined (checked `nvidia-smi --query-gpu=compute_cap`) -- can't safely pick a "
+                    "CMAKE_CUDA_ARCHITECTURES value. Check nvidia-smi works, or pass --backend cpu."
+                )
+                return 1
 
-        build_root = lay.install_root / "llama.cpp-build"
-        log.info(
-            "Building llama-server (tag=%s, cuda_arch=%s) -- this can take well over an hour on a "
-            "low-power board; output follows live", manifest["tag"], strategy.cuda_arch,
-        )
-        server_bin = source_build.ensure_llama_server_built(
-            REPO_ROOT, build_root, manifest["tag"],
-            cuda_arch=strategy.cuda_arch, jobs=args.jobs, timeout=args.build_timeout,
-        )
-        asset_key = f"source-build:{profile.asset_key}"
-        llama_dir = server_bin.parent.parent
+            problems = source_build.check_build_prerequisites(backend=profile.backend)
+            if problems:
+                apt_packages = source_build.missing_apt_packages() if not args.no_apt_install else []
+                if apt_packages and source_build.has_apt() and (
+                    args.allow_apt_install or _confirm_apt_install(apt_packages)
+                ):
+                    try:
+                        source_build.install_apt_packages(apt_packages)
+                    except source_build.AptInstallError as exc:
+                        log.error("Installing dependencies failed: %s", exc)
+                        return 1
+                    problems = source_build.check_build_prerequisites(backend=profile.backend)
+
+            if problems:
+                log.error("Can't build llama-server from source -- missing prerequisites:")
+                for problem in problems:
+                    log.error("  - %s", problem)
+                log.error("Install the above, then re-run this installer.")
+                return 1
+
+            free_gb = source_build.check_free_disk_gb(lay.install_root)
+            if free_gb is not None and free_gb < source_build.MIN_FREE_DISK_GB:
+                log.error(
+                    "Only %.1fGB free at %s; a from-source build needs roughly %dGB. Free up space "
+                    "and re-run.", free_gb, lay.install_root, source_build.MIN_FREE_DISK_GB,
+                )
+                return 1
+
+            build_root = lay.install_root / "llama.cpp-build"
+            log.info(
+                "Building llama-server (tag=%s, cuda_arch=%s) -- this can take well over an hour on "
+                "a low-power board; output follows live", manifest["tag"], strategy.cuda_arch,
+            )
+            server_bin = source_build.ensure_llama_server_built(
+                REPO_ROOT, build_root, manifest["tag"],
+                cuda_arch=strategy.cuda_arch, jobs=args.jobs, timeout=args.build_timeout,
+            )
+            asset_key = f"source-build:{profile.asset_key}"
+            llama_dir = server_bin.parent.parent
+            used_source_build = True
     else:
         asset_key, asset_entry = strategy.asset_key, strategy.asset_entry
         log.info("Resolved asset: %s (%s)", asset_key, asset_entry["file"])
@@ -248,7 +273,7 @@ def run_install(args: argparse.Namespace) -> int:
         "llama_cpp": {
             "tag": manifest["tag"],
             "asset_key": asset_key,
-            "built_from_source": strategy.use_source_build,
+            "built_from_source": used_source_build,
             "install_dir": str(llama_dir),
             "server_binary": str(server_bin),
             "lib_dir": str(server_bin.parent),
