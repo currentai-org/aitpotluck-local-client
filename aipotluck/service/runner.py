@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from aipotluck import diagnostics  # noqa: E402
 from aipotluck.service.llama_supervisor import LlamaSupervisor  # noqa: E402
 from aipotluck.service.newt_supervisor import NewtSupervisor  # noqa: E402
 
@@ -183,6 +184,16 @@ class _StatusHandler(BaseHTTPRequestHandler):
                     "tunnel": tunnel_info,
                 }
             )
+            return
+
+        if self.path == "/capabilities":
+            # No secrets in here (unlike runtime_config's tunnel section, see _redacted_runtime_config
+            # above) -- everything reported is host hardware/software facts and the installer's own
+            # public decision logic, so this is unauthenticated on localhost the same as /status.
+            fingerprint = diagnostics.gather_fingerprint(
+                config_dir=self.runner.config_dir, runtime_config=self.runner.runtime_config
+            )
+            self._write_json(fingerprint)
             return
 
         self.send_response(404)
