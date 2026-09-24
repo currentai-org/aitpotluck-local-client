@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,56 @@ class TestRedactedRuntimeConfig:
     def test_passthrough_when_no_tunnel_section(self):
         config = {"logged_in": False}
         assert runner._StatusHandler._redacted_runtime_config(config) == config
+
+
+class TestCapabilitiesEndpoint:
+    """A real HTTP GET against a real running server -- diagnostics.gather_fingerprint itself is
+    faked (it's covered for real in test_diagnostics.py); what this pins is that the route is
+    actually wired up and returns exactly what gather_fingerprint produced, as real JSON over the
+    wire."""
+
+    def test_returns_the_fingerprint_as_json(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "runtime.json").write_text(json.dumps({"logged_in": False}), encoding="utf-8")
+        fake_fingerprint = {"service": "aipotluck", "fingerprint_version": 1, "os": {"name": "linux"}}
+        monkeypatch.setattr(runner.diagnostics, "gather_fingerprint", lambda **kwargs: fake_fingerprint)
+
+        svc = runner.AipotluckServiceRunner(host="127.0.0.1", port=0, config_dir=config_dir, log_dir=None)
+        try:
+            svc.start()
+            port = svc._server.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/capabilities", timeout=5) as resp:
+                assert resp.status == 200
+                assert resp.headers["Content-Type"] == "application/json"
+                body = json.loads(resp.read())
+            assert body == fake_fingerprint
+        finally:
+            svc.stop(timeout=2)
+
+    def test_passes_config_dir_and_runtime_config_through(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "runtime.json").write_text(json.dumps({"logged_in": True}), encoding="utf-8")
+        captured = {}
+
+        def _fake_gather(*, config_dir, runtime_config):
+            captured["config_dir"] = config_dir
+            captured["runtime_config"] = runtime_config
+            return {}
+
+        monkeypatch.setattr(runner.diagnostics, "gather_fingerprint", _fake_gather)
+
+        svc = runner.AipotluckServiceRunner(host="127.0.0.1", port=0, config_dir=config_dir, log_dir=None)
+        try:
+            svc.start()
+            port = svc._server.server_address[1]
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/capabilities", timeout=5).read()
+        finally:
+            svc.stop(timeout=2)
+
+        assert captured["config_dir"] == config_dir
+        assert captured["runtime_config"]["logged_in"] is True
 
 
 class TestAipotluckServiceRunnerStartStop:

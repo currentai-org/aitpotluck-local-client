@@ -13,6 +13,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+# scripts/ holds standalone tools (package_custom_build.py and, per its own docstring, more to
+# come) that aren't part of the aipotluck package -- put the directory itself on sys.path so
+# tests can `import package_custom_build` etc. directly, the same way install.py puts REPO_ROOT
+# on sys.path for its own internal imports.
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 import pytest
 

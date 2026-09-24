@@ -2,12 +2,28 @@
 
 Cross-platform installer and local inference server wrapper. Wraps
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (pinned as a git
-submodule at `vendor/llama.cpp` for reference/docs; the installer itself
-downloads prebuilt release binaries rather than building from source) and
-installs a small companion Python service that keeps `llama-server`
-running at all times.
+submodule at `vendor/llama.cpp`) and installs a small companion Python
+service that keeps `llama-server` running at all times.
+
+The installer prefers a prebuilt release binary, but not every host has one it
+can actually run: `aipotluck/installer/build_strategy.py` decides this per
+host (no published asset for the detected backend/arch, e.g. every
+Jetson-class arm64+CUDA board; or the best available asset needs a newer
+glibc than the host has), and `aipotluck/installer/source_build.py` builds
+`llama-server` from the same pinned `vendor/llama.cpp` tag when it's needed.
+See "Confirmed hardware" below for what's actually been run where.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale.
+
+## Confirmed hardware
+
+| Host | OS | Backend | Install path | Status |
+| --- | --- | --- | --- | --- |
+| x86_64 laptop | Ubuntu 24.04 | CPU | prebuilt `linux-x64-cpu` asset | confirmed |
+| NVIDIA Jetson Orin Nano 8GB (Developer Kit Super) | JetPack 6.2.3 (Ubuntu 22.04, glibc 2.35) | CUDA (SM 8.7) | source build (no `linux-arm64-cuda` asset exists, and the `linux-arm64-cpu` asset needs glibc 2.38, which JetPack doesn't have) | confirmed -- real build, `--list-devices` reports `CUDA0: Orin`, a real `-hf` download and chat completion both verified |
+
+Everything else in "Status" just below is implemented against documented OS
+conventions but not run on real hardware yet.
 
 ## Status
 
@@ -110,14 +126,170 @@ The Python installer's flags (the PowerShell wrapper exposes the equivalent
 --ctx-size N           llama-server context size (default: 4096)
 --gpu-layers VALUE     llama-server -ngl value: int, 'auto', or 'all'
 --server-host / --server-port  llama-server bind address (default 127.0.0.1:8080)
+--no-source-build      Fail instead of building llama-server from source when
+                       no prebuilt asset is viable for this host
+--jobs N               Parallel build jobs for a from-source build (default:
+                       auto, capped by available RAM)
+--build-timeout SECS   Wall-clock ceiling for a from-source build (default: 5400)
+--allow-apt-install    Consent up front to installing missing build deps via
+                       'sudo apt-get install' (skips the interactive y/N prompt)
+--no-apt-install       Never offer to auto-install build deps, even interactively
 -v / --verbose
 ```
 
+### Building from source (and our own binary cache)
+
+Not every host has a prebuilt release binary it can actually run --
+`build_strategy.py` checks this (not just "does an asset exist for this
+os/arch/backend", but "does the *specific* asset resolve to something this
+glibc can run"). When it doesn't, two things are tried in order before
+anything gets compiled:
+
+1. **Our own cache of prebuilt binaries** (`build_cache.py`,
+   `llama_custom_builds.json`) -- once we've built a binary for a given
+   host/backend/GPU-architecture combination once, there's no reason to pay
+   a 30-90 minute compile again on every matching device. If a cached entry
+   matches, it's downloaded (cached, checksum-verified, same as any other
+   asset) and compilation is skipped entirely.
+2. **`source_build.py`** builds `llama-server` from the pinned
+   `vendor/llama.cpp` tag when neither an upstream asset nor a cached custom
+   one matches.
+
+This is all automatic; you'll see it happen if the installer logs "No
+viable upstream asset for this host... but a cached custom build exists" (no
+compile) or "No viable prebuilt asset for this host... building llama-server
+from source" (a real compile) instead of "Resolved asset:".
+
+Two concrete cases this covers today:
+
+- **No prebuilt asset for the detected backend at all** -- every
+  Jetson-class arm64+CUDA board: `nvidia-smi` genuinely works there and CUDA
+  is real, but llama.cpp's release CI has never published a
+  `linux-arm64-cuda` asset.
+- **The best available asset needs a newer glibc than the host has** --
+  llama.cpp's release CI builds its Linux arm64 assets against a newer base
+  image than most arm64 boards actually run. Confirmed live: the pinned
+  `linux-arm64-cpu` asset needs glibc 2.38; JetPack 6.2.3 (Ubuntu 22.04)
+  ships 2.35, so even the CPU-only fallback refuses to start there.
+
+A source build needs `cmake`, `git`, a C++17 compiler, OpenSSL dev headers,
+and the OpenMP runtime -- plus, per backend, a GPU vendor toolchain: `nvcc`
+for CUDA, `glslc` + Vulkan headers for Vulkan, `hipcc` for ROCm. This list
+isn't guessed from one host's missing package -- it's cross-referenced
+against every Linux job in llama.cpp's own release CI (cpu/cuda/vulkan/rocm),
+intersected with what a native build of just the `llama-server` target
+actually needs (their CI installs several things -- `ninja-build`,
+`python3-venv`, `git-lfs`, `libjpeg-dev` -- for its own portable-build/test
+concerns that don't apply here; confirmed `libjpeg-dev` isn't even a real
+llama.cpp dependency, since image loading goes through the header-only
+`stb_image` instead of libjpeg). See `source_build.py`'s module docstring for
+the full evidence trail.
+
+For everything except a GPU vendor toolchain, the installer can install the
+gap itself via `sudo apt-get install` -- but only with your explicit
+consent: pass `--allow-apt-install` up front, or answer yes to the
+interactive prompt it shows otherwise (that prompt never appears, and nothing
+is auto-installed, without a real terminal to ask through -- e.g. the public
+`curl | bash` one-liner, which has no stdin a person could answer through).
+`sudo`'s own password prompt is untouched either way; this installer only
+ever supplies the package list, never a password. `--no-apt-install` turns
+this off entirely and goes back to just printing the exact `apt-get install`
+line for whatever's missing. A GPU vendor toolchain is never auto-installed
+under any of these flags -- each is a multi-GB, distro/vendor-specific
+install (on Jetson/JetPack, CUDA specifically is the vendor-managed OS image,
+not something this installer should touch); a missing `nvcc`/`glslc`/`hipcc`
+always stays an instruction.
+
+**Two easy-to-miss gaps if you install these yourself ahead of time, both the
+same shape:** a plain, non-`REQUIRED` `find_package(...)` in llama.cpp's own
+CMake that degrades **silently** -- configure still succeeds -- rather than
+failing loud.
+
+- HTTPS support (used by `-hf` and `--cache-list` -- i.e. this project's own
+  `pull`/`list` commands) needs OpenSSL dev headers (`libssl-dev` on
+  Debian/Ubuntu). Missing them doesn't fail the build; it only fails later,
+  at runtime, the first time something tries to download a model.
+- OpenMP multi-threading on the CPU backend needs the OpenMP runtime
+  (`libgomp1` on Debian/Ubuntu). Missing it doesn't fail the build either --
+  just a `message(WARNING "OpenMP not found")` buried in build output, and
+  the binary silently falls back to single-threaded CPU inference, no error,
+  just much slower than it should be.
+
+The installer's preflight check catches both before ever starting a build
+that can otherwise take well over an hour on a low-power board.
+
+A from-source build is slow and memory-hungry (`--jobs` defaults to a
+conservative estimate based on available RAM, since a naive `-j$(nproc)` can
+OOM or swap-thrash a low-memory board) and needs real disk space (a few GB
+for the build; the installer refuses up front if less than 6GB is free
+rather than fail 40 minutes in from `ENOSPC`). Re-running the installer
+after a successful source build is fast -- it's keyed to the exact
+tag+backend combination and skips straight to reusing the binary already
+built.
+
+#### Custom binary cache (`llama_custom_builds.json`)
+
+This is a separate, optional manifest alongside `llama_version.json`, for
+binaries **we've** built and hosted ourselves -- not upstream releases. Same
+shape (`release_base_url` + `tag` + `{key: {file, sha256}}`), same
+download/verify/extract code path (`fetch.py`), just a different source and
+a different key format: `{os}-{arch}-{backend}`, plus `-sm{N}` for CUDA
+(e.g. `linux-arm64-cuda-sm87` for a Jetson Orin) -- since different
+Jetson-class generations (Xavier SM 7.2, Orin SM 8.7, Thor SM 10.x) are not
+interchangeable; a binary built for one `CMAKE_CUDA_ARCHITECTURES` value
+will not run correctly targeting a different one.
+
+The file is entirely optional -- a checkout without one (or with an empty
+`assets` map) just falls through to a real source build every time, exactly
+as if this feature didn't exist.
+
+To add an entry after building on a new host, `scripts/package_custom_build.py`
+is the standardized tool for this (written up front to be reused, not a
+one-off) -- run it right after the installer finishes a real source build
+there:
+
+```bash
+python3 scripts/package_custom_build.py --build-dir /path/to/llama.cpp-build
+```
+
+It stages the build's `bin/` directory into a flat top-level `llama-<tag>/`
+directory (matching upstream's own release archive layout exactly --
+`llama-b10989/llama-server`, `llama-b10989/libggml-cuda.so.0`, etc., no
+nested `bin/` -- confirmed against a real llama.cpp release tarball), then
+**verifies relocatability for real**: copies the staged directory to a fresh
+path elsewhere and actually runs `llama-server --list-devices` from there,
+refusing to package anything that fails (a real safeguard, not a formality
+-- this exact project shipped a non-relocatable build once, and that failure
+mode is a dynamic-linker error at runtime, not something a "did cmake
+configure OK" check would ever catch). Tag and cache key both default to
+sensible values (the pinned tag from `llama_version.json`; the key
+auto-derived from *this host's own* detected profile via the same code
+`build_cache.py` uses to look one up) -- override with `--tag`/`--key` only
+when packaging on behalf of a different host than the one you're running on.
+
+It prints the exact next two steps: the `gh release upload`/`create`
+command, and the JSON snippet to add to `llama_custom_builds.json` (file
+name + sha256, computed for you) -- both ready to copy-paste. Uploading the
+release asset is a real publish to this project's public repo, so that step
+is left as something a person runs deliberately, not something the script
+does on its own.
+
 After install, the service:
 
-- Exposes a health check at `http://127.0.0.1:8765/healthz` and detailed
+- Exposes a health check at `http://127.0.0.1:8765/healthz`, detailed
   status (including live llama-server supervisor state) at
-  `http://127.0.0.1:8765/status`.
+  `http://127.0.0.1:8765/status`, and a full system/capability fingerprint
+  at `http://127.0.0.1:8765/capabilities` -- OS/distro, arch, glibc
+  version, CPU/memory/disk, GPU backend + CUDA compute capability, every
+  build tool `source_build.py` checks for, and the actual install strategy
+  this device would resolve to right now (upstream asset vs. our own binary
+  cache vs. a real source build, and why) alongside what's *currently*
+  installed. Built from the exact same detection code the installer itself
+  uses (`aipotluck/diagnostics.py`), so this is a live, remotely-queryable
+  answer to "what would happen if I reinstalled this right now" -- useful
+  for diagnosing a device that's already in a broken state, since every
+  section degrades independently (`{"error": ...}`) rather than the whole
+  endpoint failing if one probe does.
 - **Actively supervises `llama-server`**: starts it on service startup,
   polls `/health` every 5s, and restarts it automatically on crash with
   exponential backoff (1s, 2s, 5s, 10s, 20s, 30s, 60s -- resets if the
@@ -232,13 +404,21 @@ No real network and no real systemd/launchd. Every OS/network/service-manager bo
 `urllib.request.urlopen`) is mocked or swapped for a lightweight fake; only real filesystem
 writes happen, always rooted under pytest's own `tmp_path` -- the suite never touches the actual
 per-OS install locations (`~/.local/bin`, `~/.config/aipotluck`, a real systemd unit, etc.). One
-deliberate exception: `test_model_pull.py` runs a real subprocess (a tiny stand-in script playing
-the part of `llama-server`) and polls a real socket -- spawn/health-poll/terminate orchestration
-is exactly the kind of thing a mock can make *look* correct while testing nothing, so that one
-module is exercised for real instead. Covers `platform_detect.py`, `layout.py`, `cli.py`
-(including the argparse regression -- see `test_cli_argparse.py`'s docstring), `cli_shim.py`,
-`model_pull.py`'s `pull`/`list` orchestration, `install.py`'s `--no-service` and real install
-paths, and `service/runner.py`'s login-gating and `/status` secret redaction.
+deliberate exception: `test_model_pull.py` and `test_source_build.py` run a real subprocess (a
+tiny stand-in script playing the part of `llama-server`/`cmake`) and, for the latter, a real
+spawned grandchild process to prove a build timeout actually kills the whole process tree --
+spawn/health-poll/terminate (or configure/build/kill) orchestration is exactly the kind of thing a
+mock can make *look* correct while testing nothing, so those modules are exercised for real
+instead. Covers `platform_detect.py` (including glibc/CUDA-compute-capability detection),
+`build_strategy.py`'s prebuilt-vs-source-build decision, `build_cache.py`'s custom-binary-cache
+lookup, `layout.py`, `cli.py` (including the argparse regression -- see `test_cli_argparse.py`'s
+docstring), `cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `install.py`'s
+`--no-service`/source-build/binary-cache/real install paths, `service/runner.py`'s login-gating,
+`/status` secret redaction and the real-HTTP `/capabilities` route, `diagnostics.py`'s per-section
+failure isolation, and `scripts/package_custom_build.py`'s real relocatability check (a real fake
+`llama-server` script, copied to a real different path and actually executed -- the same reasoning
+as `test_model_pull.py`/`test_source_build.py`'s real-subprocess tests: this check exists
+specifically to catch a failure mode a static/mocked check would miss).
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
@@ -252,16 +432,21 @@ download and inference request).
 ```
 vendor/llama.cpp/              git submodule, pinned commit (reference + docs)
 llama_version.json             pinned release tag + per-platform asset checksums
+llama_custom_builds.json        our own cached prebuilt binaries (see "Building from source")
 newt_version.json               pinned newt (Pangolin tunnel client) release + per-platform checksums
 install.sh                     public one-line installer entry point (Linux/macOS)
 install.ps1                    public one-line installer entry point (Windows)
 pyproject.toml                  packaging metadata -- console-script entries for a `pip install .` path only
 aipotluck/                      the root package everything below lives under
+  diagnostics.py                 GET /capabilities fingerprint -- reuses installer/ detection code
   installer/
     install.py                    installer CLI entry point -- always produces a logged-out install
     cli.py                         login/logout/status CLI for an already-installed device
     cli_shim.py                    writes the `aipotluck-local-client` wrapper onto PATH (see "CLI on PATH")
-    platform_detect.py             OS/arch/GPU-backend detection
+    platform_detect.py             OS/arch/GPU-backend/glibc/CUDA-compute-capability detection
+    build_strategy.py              decide prebuilt-asset vs. build-from-source per host
+    source_build.py                configure+build llama-server from vendor/llama.cpp
+    build_cache.py                  check our own prebuilt-binary cache before compiling
     fetch.py                       download+checksum+extract llama.cpp releases
     newt_fetch.py                  download+checksum-verify the pinned newt binary
     layout.py                      per-OS install paths
@@ -281,6 +466,8 @@ aipotluck/                      the root package everything below lives under
 packaging/
   windows/install.ps1             Windows bootstrapper (installs Python if missing, then installs)
   windows|macos|linux/README.md   per-OS implementation notes
+scripts/
+  package_custom_build.py         standardized custom-binary-cache packaging tool (see "Building from source")
 tests/                            unit tests -- see "Tests" above
 ARCHITECTURE.md                  full design doc
 ```
