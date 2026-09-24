@@ -3,13 +3,30 @@ restart on crash with exponential backoff, and clean shutdown.
 
 Cloned from llama_supervisor.py's shape (same rationale: the OS service
 manager supervises this Python process, this class supervises the child
-process it owns -- two tiers of self-healing). The one real difference:
-newt has no local HTTP health endpoint of its own, so "healthy" here is
-just "the process is currently running" -- there is no equivalent of
-llama_supervisor's `/health` poll to wait on at startup or to watch for a
-silent unhealthy-but-still-running state.
+process it owns -- two tiers of self-healing).
 
   systemd (Restart=on-failure) -> aipotluck_service.py -> NewtSupervisor -> newt
+
+Unlike llama-server, newt has no local HTTP `/health` to poll -- but as of newt 1.17.0 it does
+have a real runtime health signal: `--health-file <path>`, which newt writes itself once it has
+genuinely established the tunnel. Confirmed live, against a real local Pangolin stack, exactly how
+this behaves (not assumed from the --help text):
+  - newt actively removes any stale health file at its OWN process startup, before it has
+    reconnected -- so a freshly (re)started process never inherits a leftover "ok" from before.
+  - Once connected, it writes the literal 2-byte content "ok".
+  - It is written ONCE on connect and is NEVER refreshed on later pings, and -- this is the part
+    worth stating plainly, because it's the opposite of what the flag name suggests -- newt does
+    NOT remove or update it again if an already-established connection later drops. Verified by
+    killing the real Pangolin server under a connected newt process: it went straight into its
+    own `ERROR:`-logged retry loop while the health file kept saying "ok" from the earlier,
+    now-stale connection.
+
+So the health file alone answers "did this process connect successfully at least once since it
+started" -- a real, positive, runtime-computed signal, but not by itself "is it connected RIGHT
+NOW". That's why tunnel_connected() below combines it with the log-tail check this module already
+had: newt's own log keeps emitting a fresh ERROR line for as long as it's genuinely still failing
+to (re)connect, so a recent ERROR line is treated as authoritative and overrides a stale "ok" --
+the log-tail's role is now specifically that override, not an independent positive claim.
 """
 
 from __future__ import annotations
@@ -32,13 +49,17 @@ POLL_INTERVAL_SECONDS = 5
 # aipotluck.org/pangolin/FAQ.md's e2e-test section: "look for 'Tunnel connection to server
 # established successfully!'"). newt logs a fresh "ERROR:"-prefixed line every retry for as long
 # as it's genuinely failing to connect (its own internal retry loop, independent of whether the
-# OS process itself is alive) and this text once it's genuinely connected -- so "whichever signal
-# appears LAST in the log" is a real, simple, live answer to "is the tunnel actually up", which
-# process liveness alone cannot answer: a real failure this project hit shows newt happily
-# "running" for 20+ hours while never once establishing a connection.
+# OS process itself is alive) -- see this module's docstring for why this is now used only as an
+# override signal for a stale health file, not an independent positive claim.
 _TUNNEL_CONNECTED_SIGNAL = "established successfully"
 _TUNNEL_ERROR_PREFIX = "ERROR:"
 _LOG_TAIL_BYTES = 16 * 1024
+
+# newt's own --health-file content when genuinely connected -- confirmed live, not assumed from
+# docs (see module docstring). Compared after stripping whitespace/newlines defensively; the
+# exact byte content isn't documented as a stability guarantee.
+_HEALTH_FILE_OK_CONTENT = "ok"
+_HEALTH_FILENAME = "newt-health.ok"
 
 
 @dataclass
@@ -49,8 +70,9 @@ class NewtProcessInfo:
     last_exit_code: int | None = None
     last_started_at: float | None = None
     last_error: str = ""
-    # None: no signal yet (newt.log missing/empty, e.g. right after a fresh start). True/False:
-    # whichever of _TUNNEL_CONNECTED_SIGNAL / _TUNNEL_ERROR_PREFIX was logged most recently.
+    # None: no signal yet from either check (fresh start, nothing logged, no health file written).
+    # True/False: see NewtSupervisor.tunnel_connected()'s docstring for how the real runtime
+    # --health-file check and the log-tail override combine to produce this.
     # Deliberately NOT folded into `running` -- a running-but-never-connected newt process is
     # exactly the failure mode this field exists to make visible, not hide behind "running: true".
     tunnel_connected: bool | None = None
@@ -85,6 +107,12 @@ class NewtSupervisor:
         self._log_file = None
         self._terminating = False
 
+    @property
+    def health_file_path(self) -> Path | None:
+        """None when log_dir wasn't given -- mirrors newt.log's own gating (see
+        _spawn_process): there's nowhere sensible to put it without one."""
+        return self.log_dir / _HEALTH_FILENAME if self.log_dir else None
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             log.warning("Newt supervisor already running")
@@ -109,14 +137,32 @@ class NewtSupervisor:
         return info
 
     def tunnel_connected(self) -> bool | None:
-        """None if there's no log signal yet to judge by; otherwise reflects whichever of a
-        successful-connection line or an ERROR line newt logged most recently. Computed fresh
-        from the log file every call (not cached in self._info) -- it has to reflect newt's
-        CURRENT state, including a process that has been "running" for hours without ever
-        actually connecting."""
+        """Combines newt's own --health-file (a real runtime signal newt computes from its actual
+        connection state, not text-pattern matching) with a log-tail check, in that priority
+        order. Computed fresh every call (never cached in self._info) -- it has to reflect newt's
+        CURRENT state, not a snapshot from whenever it last transitioned.
+
+        Why both are needed, confirmed live against a real Pangolin tunnel (see module
+        docstring): the health file says "ok" once connected but is NEVER updated again on later
+        pings, and -- critically -- is NOT cleared if an already-established connection later
+        drops. So a stale "ok" from an earlier, now-dead connection would read as healthy forever
+        if trusted alone. The log-tail check closes that gap: newt keeps emitting a fresh ERROR
+        line for as long as it's genuinely still failing to (re)connect, so a recent ERROR line
+        overrides a stale "ok". A log line that itself claims success is kept as a fallback
+        positive signal (in case the health file write is momentarily behind, or --health-file
+        was ever unavailable for some reason) rather than an independent source of truth.
+        """
         if not self.log_dir:
             return None
-        return _classify_tunnel_state(_tail_log_lines(self.log_dir / "newt.log"))
+
+        log_state = _classify_tunnel_state(_tail_log_lines(self.log_dir / "newt.log"))
+        if log_state is False:
+            return False  # a fresh ERROR line always wins -- overrides a stale "ok" health file
+
+        if _health_file_says_ok(self.health_file_path):
+            return True
+
+        return log_state  # True (log itself claims success) or None (no evidence yet)
 
     # -- internals --
 
@@ -181,6 +227,14 @@ class NewtSupervisor:
             self._log_file = open(self.log_dir / "newt.log", "a", encoding="utf-8")
             stdout_target = self._log_file
             stderr_target = self._log_file
+
+            health_file = self.log_dir / _HEALTH_FILENAME
+            # Belt and suspenders: newt tries to clear its own stale health file at startup
+            # (confirmed live), but don't rely on that being every version's behavior -- a leftover
+            # "ok" from a previous process that this fresh spawn hasn't earned yet would be read as
+            # healthy immediately, before newt has reconnected to anything.
+            health_file.unlink(missing_ok=True)
+            cmd += ["--health-file", str(health_file)]
 
         proc = subprocess.Popen(
             cmd,
@@ -270,3 +324,16 @@ def _classify_tunnel_state(lines: list[str]) -> bool | None:
         if _TUNNEL_ERROR_PREFIX in line:
             return False
     return None
+
+
+def _health_file_says_ok(path: Path | None) -> bool:
+    """True only if the file exists and its content matches newt's real --health-file output.
+    Missing (never written, or removed at newt's own startup before reconnecting) is False, not
+    an error -- that's the expected state for "not connected yet"."""
+    if path is None:
+        return False
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return content == _HEALTH_FILE_OK_CONTENT

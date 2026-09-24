@@ -343,13 +343,29 @@ retries forever on its own and never exits just because it can't reach Pangolin,
 connection failure looks identical to success under `running: true` unless this is checked
 explicitly (confirmed live: a device ran with `running: true` for 20+ hours while the tunnel was
 never actually up, because Pangolin's endpoint was pointing at an address the device couldn't
-reach). The check itself is a live read of `newt.log`'s own output
-(`aipotluck/service/newt_supervisor.py`) -- newt logs a fresh `ERROR:` line on every failed retry
-and a `"...established successfully!"` line once it actually connects, so "whichever signal
-appears most recently in the log" is a real, simple answer that process liveness alone can't give.
+reach).
+
+The check (`aipotluck/service/newt_supervisor.py`) combines two signals, in priority order:
+
+1. **newt's own `--health-file`** (newt >= 1.17.0) -- a real runtime signal newt computes from its
+   actual connection state, not text matching. It writes the literal content `ok` once genuinely
+   connected. **Confirmed live that this is not sufficient alone**: newt never refreshes it on
+   later pings, and critically does *not* clear it if an already-established connection later
+   drops -- killing a real, connected Pangolin server out from under a live newt process left the
+   file saying `ok` while newt went straight into its own `ERROR:`-logged retry loop. A stale `ok`
+   would read as healthy forever if trusted by itself.
+2. **A tail of `newt.log`**, kept specifically to catch that gap -- newt logs a fresh `ERROR:` line
+   on every failed retry for as long as it's genuinely still failing, so a recent `ERROR:` line
+   overrides a stale `ok` health file. A log line that itself claims success is a fallback
+   positive signal, not an independent source of truth.
+
+`NewtSupervisor` also deletes any stale health file before every fresh spawn (belt-and-suspenders
+on top of newt's own attempt to do the same at its startup), so a leftover `ok` from a previous
+process is never inherited by a new one that hasn't reconnected yet.
+
 `status` prints an explicit warning (and points at `newt.log`) when it sees `running: true` next
-to a confirmed-disconnected tunnel; `tunnel_connected: null` (no signal yet, e.g. right after a
-fresh start) is left alone rather than treated as a failure.
+to a confirmed-disconnected tunnel; `tunnel_connected: null` (no signal yet from either check,
+e.g. right after a fresh start) is left alone rather than treated as a failure.
 
 ## Models: pull / list
 
@@ -433,7 +449,9 @@ failure isolation, `scripts/package_custom_build.py`'s real relocatability check
 `llama-server` script, copied to a real different path and actually executed -- the same reasoning
 as `test_model_pull.py`/`test_source_build.py`'s real-subprocess tests: this check exists
 specifically to catch a failure mode a static/mocked check would miss), and
-`newt_supervisor.py`'s `tunnel_connected` log classification against real log files.
+`newt_supervisor.py`'s `tunnel_connected` (a real fake newt binary, a real health file, and a
+real spawned subprocess proving `--health-file` is actually on the command line and stale state
+is actually cleared -- not just that the code reads that way).
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+
