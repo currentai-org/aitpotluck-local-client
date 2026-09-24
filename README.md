@@ -20,7 +20,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale.
 | Host | OS | Backend | Install path | Status |
 | --- | --- | --- | --- | --- |
 | x86_64 laptop | Ubuntu 24.04 | CPU | prebuilt `linux-x64-cpu` asset | confirmed |
-| NVIDIA Jetson Orin Nano 8GB (Developer Kit Super) | JetPack 6.2.3 (Ubuntu 22.04, glibc 2.35) | CUDA (SM 8.7) | source build (no `linux-arm64-cuda` asset exists, and the `linux-arm64-cpu` asset needs glibc 2.38, which JetPack doesn't have) | confirmed -- real build, `--list-devices` reports `CUDA0: Orin`, a real `-hf` download and chat completion both verified |
+| NVIDIA Jetson Orin Nano 8GB (Developer Kit Super) | JetPack 6.2.3 (Ubuntu 22.04, glibc 2.35) | CUDA (SM 8.7) | our own binary cache (`linux-arm64-cuda-sm87`) | confirmed -- cache-hit installs in ~5s |
 
 Everything else in "Status" just below is implemented against documented OS
 conventions but not run on real hardware yet.
