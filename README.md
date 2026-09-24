@@ -120,11 +120,15 @@ The Python installer's flags (the PowerShell wrapper exposes the equivalent
 --system              Install machine-wide (requires elevation)
 --no-start            Install the service but don't start it
 --no-service          Only fetch/extract llama.cpp, skip the Python service
---model-hf REPO:QUANT Hugging Face repo[:quant] for llama-server's own -hf
-                       downloader (default: a small Qwen2.5-0.5B placeholder)
---model-path PATH      Use a local GGUF file instead
---ctx-size N           llama-server context size (default: 4096)
---gpu-layers VALUE     llama-server -ngl value: int, 'auto', or 'all'
+--model-hf REPO:QUANT  Pre-fetch + pre-size this model as the device's default
+                       (default: a small Qwen2.5-0.5B placeholder). llama-server
+                       runs in router mode (see "Models: pull / list" below) and
+                       can serve any model already downloaded, not only this one.
+--model-path PATH      Pre-size a local GGUF file instead of fetching one
+--no-model-pull        Skip the pre-fetch/pre-size step (CI/dry-run contexts)
+--models-max N         Models the router may hold loaded at once (default: 1)
+--gpu-layers VALUE     llama-server -ngl value: int, 'auto', or 'all' (applies
+                       to every model the router loads, not just the default one)
 --server-host / --server-port  llama-server bind address (default 127.0.0.1:8080)
 --no-source-build      Fail instead of building llama-server from source when
                        no prebuilt asset is viable for this host
@@ -377,46 +381,61 @@ e.g. right after a fresh start) is left alone rather than treated as a failure.
 
 ## Models: pull / list
 
-Neither the installer nor the service ever downloads model weights on their own -- the installer
-only fetches the llama.cpp *binaries*, and `llama-server` itself lazily downloads whatever
-`-hf`/`--model` it's configured with the first time it actually starts. `pull` and `list` (in
-`aipotluck/installer/model_pull.py`) exist to trigger and inspect that ahead of time:
+`llama-server` runs in its own **router mode** (CUR-1965): the service never pins a single
+`-hf`/`--model` of its own. One always-running process auto-discovers every model already in the
+Hugging Face cache and serves whichever one an inference request's own `"model"` field names,
+loading/unloading instances on demand (`--models-max` caps how many at once -- `1` by default, see
+below). This is what makes "the user switched models" something llama-server itself detects and
+handles -- confirmed against `vendor/llama.cpp/tools/server/server-models.cpp` -- rather than
+something this project has to watch for or proxy.
+
+`pull` and `list` (`aipotluck/installer/model_pull.py`) exist to get a model downloaded and
+correctly sized *before* it's first requested, rather than paying a cold download plus
+stock-defaults sizing on that first real request:
 
 ```bash
-aipotluck-local-client pull bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M   # download + activate
+aipotluck-local-client pull bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M   # download + size
 aipotluck-local-client list                                              # what's cached locally
 ```
 
-`pull` accepts any Hugging Face `repo` or `repo:quant` target -- the exact same shorthand
-`--model-hf` already takes -- and hands it straight to `llama-server`'s own `-hf` downloader
-rather than re-implementing Hugging Face's GGUF-resolution logic (matching a quant string to the
-right file, split-GGUF handling, etc). It blocks until the model has actually finished
-downloading *and* loading successfully (a real `/health` check on a throwaway port, not just "the
-download finished"), then sets it as `runtime.json`'s active model and restarts the
-already-installed service, the same "edit config, restart the service" shape `login`/`logout`
-use. Independent of login state -- pulling a model doesn't need pairing.
+`pull` accepts any Hugging Face `repo` or `repo:quant` target and hands it straight to
+`llama-server`'s own `-hf` downloader rather than re-implementing Hugging Face's GGUF-resolution
+logic (matching a quant string to the right file, split-GGUF handling, etc). It blocks until the
+model has actually finished downloading *and* loading successfully (a real `/health` check on a
+throwaway port, not just "the download finished"), sizes it (see below), then -- rather than
+restarting the whole service the way `login`/`logout` do -- best-effort asks a running router to
+`GET /models?reload=1` so the new model and its sizing are live immediately. Independent of login
+state -- pulling a model doesn't need pairing.
 
 `list` reads the same on-disk cache `-hf` writes into and `pull` reads from -- a real Hugging
 Face Hub cache layout (`$LLAMA_CACHE` / `$HF_HUB_CACHE` / `$HUGGINGFACE_HUB_CACHE` /
 `$HF_HOME/hub` / `$XDG_CACHE_HOME/huggingface/hub` / `~/.cache/huggingface/hub`, in that order --
 see `vendor/llama.cpp/common/hf-cache.cpp`) -- via `llama-server`'s own `--cache-list` flag, for
-the same "don't re-implement it" reason `pull` reuses `-hf`. The currently active model (whatever
-`runtime.json`'s `llama_cpp.model_hf` is set to) is marked `(active)`.
+the same "don't re-implement it" reason `pull` reuses `-hf`. Router mode means there's no single
+"active" model anymore -- any cached model can be requested at any time -- so a model with an
+already-computed sizing preset is marked `(sized)` instead.
 
 ### Automatic runtime sizing (`aipotluck/installer/model_sizing.py`)
 
-Every `pull` also re-sizes `ctx_size`, `parallel`, and the KV cache type (CUR-1965's follow-up --
-the fix that motivated this feature was a hand-done version of exactly this calculation on a real
-Jetson). After the model finishes downloading, a short second `llama-server` spawn (fast -- the
-model's already cached, this is a local load, not a network fetch) at a small probe context loads
-just far enough to report its own hyperparameters (`n_ctx_train`, per-layer KV-cache footprint)
-and to measure real available memory *with that model already resident*. From those two numbers it
-picks:
+Every `pull` sizes the model it just downloaded -- `ctx_size`, `parallel`, and the KV cache type
+-- and writes the result into `--models-preset`, an INI file llama-server's router reads and
+applies per model (`aipotluck/installer/model_presets.py` owns that file's read/write). The same
+sizing routine also runs once at service startup for any cached model that doesn't have a preset
+yet (`runner.backfill_missing_presets`) -- recovers a deleted/hand-edited-away presets file, or a
+model that reached the cache some other way, without needing another explicit `pull`.
 
-- **`ctx_size`** -- the largest context that fits the memory budget, capped at the model's own
-  trained context (there's no benefit to requesting more than that).
-- **`parallel`** -- always `1` on this single-user local device; llama-server's default of 4
-  slots divides the same memory budget four ways for no benefit here.
+To size a model, a short second `llama-server` spawn (fast -- the model's already cached, this is
+a local load, not a network fetch) at a small probe context loads just far enough to report its
+own hyperparameters: trained context length, per-layer KV-cache footprint, and file size. From
+those, plus this device's **total installed RAM** (not a live "available right now" reading --
+see below), it picks:
+
+- **`ctx_size`** -- the largest context that fits the memory budget after the model's own weight
+  size comes out of it, capped at the model's own trained context (there's no benefit to
+  requesting more than that).
+- **`parallel`** -- always `1`; llama-server's default of 4 slots divides the same memory budget
+  four ways for no benefit on this single-user local device. It also keeps `--models-max 1`'s own
+  memory math valid -- see "Router mode and memory budgeting" below.
 - **`cache_type_k`/`cache_type_v`** -- `q8_0` if the model's head dimension supports a quantized
   KV cache and there's room to reach the full trained context with it; `q4_0` if headroom is
   tighter than that; left at llama-server's f16 default if the architecture can't use a quantized
@@ -424,12 +443,29 @@ picks:
   size -- llama.cpp itself refuses to start in that case, confirmed against its own startup
   validation).
 
-Every one of those is written into `runtime.json`'s `llama_cpp.tuning` map with a plain-sentence
-reason, per CLAUDE.md's "Runtime parameters" convention -- visible from both
-`aipotluck-local-client status` and `GET /capabilities`/`GET /status`'s `runtime_params`. If sizing
-can't be done (memory can't be measured on this platform yet, the probe times out, ...) it fails
-loud into a log warning and leaves whatever ctx_size/parallel/cache_type were already configured
-untouched -- it never blocks the model switch itself, and never guesses.
+**Why total RAM, not a live "available now" reading:** background memory headroom fluctuates over
+a device's uptime, and a value picked once from a single live snapshot would bake in whatever
+happened to be true at that moment. `_MEMORY_BUDGET_FRACTION` (80% of total RAM, matching Ollama's
+own `freeMemory*80/100` eviction threshold) is the reserved headroom for the OS, other processes,
+and compute/attention scratch buffers that scale with context but aren't captured by the KV-cache
+formula alone -- an openly-approximate policy, not a precise measurement. **Future improvement,
+deliberately not attempted here:** monitor a model's *actually observed* memory headroom over its
+running lifetime and adjust sizing from there if it drifts from this static budget.
+
+Every sizing decision is written alongside the preset, in a sibling `{param: "reason string"}`
+JSON file (`model_presets.write_tuning`/`read_tuning`) -- visible from both
+`aipotluck-local-client status` and `GET /capabilities`/`GET /status`'s `runtime_params`, per
+CLAUDE.md's "Runtime parameters" convention. If sizing can't be done (memory can't be measured on
+this platform yet, the probe times out, a required hparam can't be parsed, ...) it fails loud into
+a log warning and leaves whatever preset that model already had (or none) untouched -- it never
+blocks the download/pull itself, and never guesses.
+
+### Router mode and memory budgeting
+
+`--models-max` (default `1`, `aipotluck.service.runner.DEFAULT_MODELS_MAX`) caps how many models
+the router may hold loaded simultaneously. The sizing math above assumes *one* model gets the
+whole memory budget -- raising `--models-max` is a real capacity tradeoff (multiple models sharing
+one memory budget), not a free win, and isn't accounted for by anything in this repo today.
 
 ## CLI on PATH
 
@@ -470,22 +506,26 @@ No real network and no real systemd/launchd. Every OS/network/service-manager bo
 `urllib.request.urlopen`) is mocked or swapped for a lightweight fake; only real filesystem
 writes happen, always rooted under pytest's own `tmp_path` -- the suite never touches the actual
 per-OS install locations (`~/.local/bin`, `~/.config/aipotluck`, a real systemd unit, etc.). One
-deliberate exception: `test_model_pull.py` and `test_source_build.py` run a real subprocess (a
-tiny stand-in script playing the part of `llama-server`/`cmake`) and, for the latter, a real
-spawned grandchild process to prove a build timeout actually kills the whole process tree --
-spawn/health-poll/terminate (or configure/build/kill) orchestration is exactly the kind of thing a
-mock can make *look* correct while testing nothing, so those modules are exercised for real
-instead. Covers `platform_detect.py` (including glibc/CUDA-compute-capability detection),
-`build_strategy.py`'s prebuilt-vs-source-build decision, `build_cache.py`'s custom-binary-cache
-lookup, `layout.py`, `cli.py` (including the argparse regression -- see `test_cli_argparse.py`'s
-docstring), `cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `install.py`'s
-`--no-service`/source-build/binary-cache/real install paths, `service/runner.py`'s login-gating,
+deliberate exception: `test_model_pull.py`, `test_model_sizing.py`, and `test_source_build.py` run
+a real subprocess (a tiny stand-in script playing the part of `llama-server`/`cmake`) and, for the
+last of those, a real spawned grandchild process to prove a build timeout actually kills the whole
+process tree -- spawn/health-poll/terminate (or configure/build/kill), or in `model_sizing.py`'s
+case parsing a real process's real captured startup log, is exactly the kind of thing a mock can
+make *look* correct while testing nothing, so those modules are exercised for real instead. Covers
+`platform_detect.py` (including glibc/CUDA-compute-capability detection), `build_strategy.py`'s
+prebuilt-vs-source-build decision, `build_cache.py`'s custom-binary-cache lookup, `layout.py`,
+`cli.py` (including the argparse regression -- see `test_cli_argparse.py`'s docstring),
+`cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `model_sizing.py`'s probe/compute/
+preset-writing pipeline, `model_presets.py`'s real INI/JSON read-modify-write (including that an
+unrelated hand-written section survives a write), `install.py`'s `--no-service`/source-build/
+binary-cache/real install paths (plus the default-model pre-fetch/pre-size step), `service/
+runner.py`'s login-gating, router-mode arg-building, and startup preset backfill,
 `/status` secret redaction and the real-HTTP `/capabilities` route, `diagnostics.py`'s per-section
-failure isolation, `scripts/package_custom_build.py`'s real relocatability check (a real fake
-`llama-server` script, copied to a real different path and actually executed -- the same reasoning
-as `test_model_pull.py`/`test_source_build.py`'s real-subprocess tests: this check exists
-specifically to catch a failure mode a static/mocked check would miss), and
-`newt_supervisor.py`'s `tunnel_connected` (a real fake newt binary, a real health file, and a
+failure isolation and its real-file per-model `runtime_params` view, `scripts/
+package_custom_build.py`'s real relocatability check (a real fake `llama-server` script, copied to
+a real different path and actually executed -- the same reasoning as the real-subprocess tests
+above: this check exists specifically to catch a failure mode a static/mocked check would miss),
+and `newt_supervisor.py`'s `tunnel_connected` (a real fake newt binary, a real health file, and a
 real spawned subprocess proving `--health-file` is actually on the command line and stale state
 is actually cleared -- not just that the code reads that way).
 
@@ -518,6 +558,9 @@ aipotluck/                      the root package everything below lives under
     build_cache.py                  check our own prebuilt-binary cache before compiling
     fetch.py                       download+checksum+extract llama.cpp releases
     newt_fetch.py                  download+checksum-verify the pinned newt binary
+    model_pull.py                   `pull`/`list`: download a model ahead of time via -hf, list what's cached
+    model_sizing.py                 auto-size ctx_size/parallel/cache_type_k/-v per model (router mode, CUR-1965)
+    model_presets.py                read/write the --models-preset INI + its sibling tuning-reasons JSON
     layout.py                      per-OS install paths
     python_bootstrap.py            find/install a suitable Python (Windows: via winget)
     service/

@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from aipotluck.installer import build_cache, build_strategy, fetch, source_build
+from aipotluck.installer import build_cache, build_strategy, fetch, model_presets, source_build
 from aipotluck.installer.platform_detect import (
     HostProfile,
     UnsupportedPlatformError,
@@ -204,37 +204,54 @@ def _install_strategy_info(profile: HostProfile) -> dict[str, Any]:
     }
 
 
-_RUNTIME_PARAM_FIELDS = (
-    "ctx_size",
-    "gpu_layers",
-    "parallel",
-    "cache_type_k",
-    "cache_type_v",
-    "host",
-    "port",
-    "model_hf",
-    "model_path",
-)
+_ROUTER_PARAM_FIELDS = ("host", "port", "gpu_layers", "models_dir", "models_max")
+
+# llama.cpp preset INI keys (dashed) -> this project's own JSON field spelling (snake_case),
+# matching every other field name in this API. Router-only fields (host/port/models_max/
+# gpu_layers, above) never appear here -- llama-server's own preset grammar has no such keys.
+_PRESET_KEY_TO_FIELD = {
+    "ctx-size": "ctx_size",
+    "parallel": "parallel",
+    "cache-type-k": "cache_type_k",
+    "cache-type-v": "cache_type_v",
+}
 
 
 def runtime_params(runtime_config: dict[str, Any]) -> dict[str, Any]:
-    """A clean, explicit view of the llama-server parameters actually in effect right now, plus
-    -- for any of them that were computed rather than defaulted or user-specified -- WHY, via the
-    optional `llama_cpp.tuning` map runtime.json can carry: {param_name: "reason string"}. A
-    param's absence from `tuning` means it's a static default or an explicit user override, not
-    that nothing is known about it.
+    """A clean, explicit view of the llama-server router's own params plus, per model, the
+    ctx_size/parallel/cache_type_k/-v aipotluck.installer.model_sizing computed for it -- and, for
+    each of those, WHY, from the `{param: "reason string"}` map model_presets.read_tuning returns.
+    A param's absence from a model's tuning means it's llama-server's own static default, not that
+    nothing is known about it.
 
-    This is the traceability surface CLAUDE.md's "Runtime parameters" convention requires: any
-    runtime parameter this project computes automatically (the auto-sizing feature this is
-    groundwork for writes into `tuning`) must be visible here -- and only here. GET /status
-    (`aipotluck/service/runner.py`, which imports this exact function rather than a copy) and
-    `aipotluck-local-client status` both surface this dict as-is, and /capabilities' current_install
-    section below embeds it too -- local and remote read the same source, never a second one that
-    could drift from it.
+    Router mode (CUR-1965's follow-up) means there is no single "active model" anymore -- any
+    model llama-server's router has a cache entry (or a --models-preset section) for can be
+    requested at any time, so this reports EVERY sized model, keyed by id, rather than one flat set
+    of fields. This is the traceability surface CLAUDE.md's "Runtime parameters" convention
+    requires: any runtime parameter this project computes automatically must be visible here --
+    and only here. GET /status (`aipotluck/service/runner.py`, which imports this exact function
+    rather than a copy) and `aipotluck-local-client status` both surface this dict as-is, and
+    /capabilities' current_install section below embeds it too -- local and remote read the same
+    source, never a second one that could drift from it.
     """
     llama_cfg = runtime_config.get("llama_cpp") or {}
-    params = {field: llama_cfg.get(field) for field in _RUNTIME_PARAM_FIELDS}
-    params["tuning"] = llama_cfg.get("tuning") or {}
+    params: dict[str, Any] = {field: llama_cfg.get(field) for field in _ROUTER_PARAM_FIELDS}
+    params["presets_path"] = llama_cfg.get("presets_path")
+
+    models: dict[str, Any] = {}
+    presets_path_str = llama_cfg.get("presets_path")
+    if presets_path_str:
+        presets_path = Path(presets_path_str)
+        raw_presets = model_presets.read_all(presets_path)
+        tuning_by_model = model_presets.read_tuning(presets_path)
+        for model_id, raw_args in raw_presets.items():
+            model_view = {
+                field: raw_args.get(key) for key, field in _PRESET_KEY_TO_FIELD.items()
+            }
+            model_view["tuning"] = tuning_by_model.get(model_id, {})
+            models[model_id] = model_view
+
+    params["models"] = models
     return params
 
 

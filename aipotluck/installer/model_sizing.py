@@ -1,27 +1,33 @@
-"""Automatic runtime-parameter sizing, run whenever the active model changes
-(`aipotluck-local-client pull`, CUR-1965's follow-up).
+"""Automatic per-model runtime-parameter sizing for llama-server's router mode
+(CUR-1965's follow-up).
 
-Looks at two things and picks the largest context -- and cheapest safe KV-cache quantization --
-that fits between them:
+The service runs `llama-server` in **router mode** (`aipotluck/service/runner.py`'s
+`build_llama_server_args`: no `-hf`/`--model` of its own) -- a single always-running process that
+loads/unloads model instances on demand, routed by the `"model"` field on each inference request
+(confirmed against vendor/llama.cpp/tools/server/server-models.cpp: router mode auto-discovers
+every model already in the HF cache, keyed by the exact same `repo:quant` identity
+`--cache-list`/`model_pull.list_cached_models` already use, and merges a `--models-preset` INI
+file's per-model overrides on top). This module computes that INI's `ctx-size`/`parallel`/
+`cache-type-k`/`cache-type-v` entries for a given model -- the router itself does the actual
+detection-and-swap-on-request-model-field, so this module's whole job is making sure a model has a
+*correct* preset waiting for it before the router ever picks it up, not detecting the swap itself.
 
-  1. The model's own trained context length and per-layer KV-cache footprint, probed directly
-     from the model rather than guessed from its name or file size.
-  2. The device's real memory headroom, measured with that exact model already loaded -- the same
-     class of gap that caused CUR-1965 in the first place: a model silently running with 4x more
-     KV-cache-eating parallel slots than a single-user box needs, invisible until a context-overflow
-     error forced a manual /props query to explain it.
+`ensure_preset()` is called from two places: `aipotluck-local-client pull` (always recomputes --
+a deliberate re-pull is a reasonable time to re-size) and the service's own startup (only for
+cached models that don't have a preset entry yet -- backfills a deleted/corrupted presets file, or
+a model that reached the cache some other way).
 
-Every value this picks is written into runtime.json's llama_cpp.tuning map (see CLAUDE.md's
-"Runtime parameters" convention) so it's traceable from both `status` and GET /capabilities --
-never computed silently.
-
-Why probe the running server rather than parse the GGUF file directly: this project already
-resolves a `repo:quant` shorthand to the right cached file via llama-server's own `-hf`
-downloader, and model_pull.py's own docstring explains why re-deriving that resolution logic a
-second time is deliberately avoided. Probing the actual process llama-server starts keeps this in
-lockstep with whatever file it really loaded, rather than an independently-guessed path into the
-HF cache. The model is already downloaded by the time this runs (pull_model() runs first), so the
-probe is a fast local load, not a second network fetch.
+Why the memory budget is a fixed fraction of TOTAL installed RAM, not a live "available now"
+reading: available/background memory headroom fluctuates over a device's uptime (other processes,
+OS cache pressure, whatever else the user runs), and a value picked once from a single live
+snapshot would bake in whatever happened to be true at that moment -- exactly the kind of "it just
+works until it doesn't" gap CLAUDE.md's "Runtime parameters" section warns about. Total installed
+RAM is a stable hardware fact instead. `_MEMORY_BUDGET_FRACTION` (80%, matching Ollama's own
+`freeMemory*80/100` eviction threshold) is the reserved headroom for the OS, other processes, and
+the compute/attention scratch buffers that scale with context but aren't captured by the KV-cache
+formula alone. This is a deliberate, openly-approximate policy, not a live measurement -- monitoring
+a model's *actually observed* headroom over its running lifetime and adjusting from there would be
+a real improvement, but it's future work, tracked here rather than attempted in this pass.
 """
 
 from __future__ import annotations
@@ -37,7 +43,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from aipotluck.installer.source_build import _available_memory_gb
+from aipotluck.installer import model_presets
+from aipotluck.installer.source_build import _total_memory_gb
 
 log = logging.getLogger("aipotluck.installer.model_sizing")
 
@@ -57,16 +64,15 @@ _KV_QUANT_BLOCK_SIZE = 32
 # (q8_0: 32 int8 + 2-byte scale = 34/32; q4_0: 16 bytes of 4-bit data + 2-byte scale = 18/32).
 _KV_BYTES_PER_ELEMENT = {"f16": 2.0, "q8_0": 1.0625, "q4_0": 0.5625}
 
-# Reserve a share of the memory measured free (with the model already loaded) for the OS, other
-# processes, and the compute/attention scratch buffers that scale with context but aren't captured
-# by the KV-cache formula alone -- CUR-1965 found this gap empirically (~380MB/~325MB free vs. a
-# ~1.4GB back-of-envelope KV-only estimate after a manual context-size fix). This is a deliberate
-# fudge factor, not a precise accounting -- said plainly rather than implying more rigor than it has.
-_MEMORY_SAFETY_FRACTION = 0.75
+# See module docstring: reserved share of TOTAL installed RAM budgeted for a model's weights + KV
+# cache + scratch buffers, matching Ollama's own 80%-of-free-memory eviction threshold.
+_MEMORY_BUDGET_FRACTION = 0.80
 
 # Below this, auto-sizing gives up on being clever and just picks the floor rather than handing
 # back something too small to be useful.
 _MIN_CTX_SIZE = 512
+
+_BYTES_PER_UNIT = {"MiB": 1024**2, "GiB": 1024**3}
 
 
 class ModelSizingError(RuntimeError):
@@ -80,7 +86,8 @@ class ModelProfile:
     n_embd_head_k: int
     n_embd_k_gqa: int
     n_embd_v_gqa: int
-    available_memory_gb: float | None  # measured with THIS model already loaded, before it's freed
+    model_size_bytes: int
+    total_memory_gb: float | None  # installed physical RAM -- see module docstring
 
 
 @dataclass
@@ -136,6 +143,14 @@ def _parse_int_or_list_max(text: str, key: str) -> int:
     return int(raw)
 
 
+def _parse_model_size_bytes(text: str) -> int:
+    match = re.search(r"file size\s*=\s*([\d.]+)\s*(MiB|GiB)", text)
+    if not match:
+        raise ModelSizingError("could not find the model's 'file size' in llama-server's startup output")
+    value, unit = match.groups()
+    return int(float(value) * _BYTES_PER_UNIT[unit])
+
+
 def probe_model_profile(
     server_binary: Path,
     *,
@@ -145,12 +160,13 @@ def probe_model_profile(
     host: str = "127.0.0.1",
     timeout: float = _PROBE_TIMEOUT_SECONDS,
 ) -> ModelProfile:
-    """Spawns server_binary against the already-downloaded model at a small probe context size,
-    waits for it to report healthy (loaded), reads its own startup log for the hparams a KV-cache
-    sizing decision needs, measures available memory with the model still resident, then
-    terminates it. Raises ModelSizingError on anything that stops this from producing a trustworthy
-    profile -- callers should treat that as "skip auto-sizing this time," not fatal to the pull
-    itself, per this project's fail-loud-but-not-catastrophic posture for a nice-to-have layer.
+    """Spawns server_binary against the already-downloaded model at a small probe context size
+    (single-model mode, NOT router mode -- a throwaway process, not the supervised router), waits
+    for it to report healthy (loaded), reads its own startup log for the hparams a KV-cache sizing
+    decision needs, then terminates it. Raises ModelSizingError on anything that stops this from
+    producing a trustworthy profile -- callers should treat that as "skip auto-sizing this time,"
+    not fatal to the pull/startup it's part of, per this project's fail-loud-but-not-catastrophic
+    posture for a nice-to-have layer.
     """
     if not server_binary.exists():
         raise ModelSizingError(f"llama-server binary not found at {server_binary}")
@@ -159,8 +175,9 @@ def probe_model_profile(
 
     port = _free_port(host)
     # --parallel 1 here matches what auto-sizing itself is about to configure for real (see
-    # compute_sizing) -- probing at the same slot count the real deployment will use makes the
-    # memory measurement below representative of it, not of the (different) default.
+    # compute_sizing) -- probing at the same slot count the real deployment will use keeps this
+    # representative, though unlike the live-memory design this replaced, the memory budget below
+    # no longer depends on anything measured during this probe.
     cmd = [str(server_binary), "--host", host, "--port", str(port), "--ctx-size", str(_PROBE_CTX_SIZE), "--parallel", "1"]
     if model_path:
         cmd += ["--model", str(model_path)]
@@ -192,10 +209,6 @@ def probe_model_profile(
 
         if not healthy:
             raise ModelSizingError(f"Timed out after {timeout:.0f}s probing model metadata.")
-
-        # Measured now, with the model resident -- this is what the real deployment will have
-        # left over for KV cache + scratch buffers once loaded, not idle headroom before load.
-        available_memory_gb = _available_memory_gb()
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -213,7 +226,8 @@ def probe_model_profile(
         n_embd_head_k=_parse_int(output, "n_embd_head_k"),
         n_embd_k_gqa=_parse_int_or_list_max(output, "n_embd_k_gqa"),
         n_embd_v_gqa=_parse_int_or_list_max(output, "n_embd_v_gqa"),
-        available_memory_gb=available_memory_gb,
+        model_size_bytes=_parse_model_size_bytes(output),
+        total_memory_gb=_total_memory_gb(),
     )
 
 
@@ -226,7 +240,7 @@ def _kv_cache_bytes_per_token(profile: ModelProfile, cache_type_k: str, cache_ty
 
 def compute_sizing(profile: ModelProfile) -> SizingResult:
     """Picks ctx_size, parallel, and KV cache type from a ModelProfile. Never raises -- if
-    available_memory_gb couldn't be measured (non-Linux today; _available_memory_gb() only reads
+    total_memory_gb couldn't be measured (non-Linux today; _total_memory_gb() only reads
     /proc/meminfo), falls back to the model's trained context with no quantization rather than
     guessing a memory budget that doesn't exist."""
     parallel = 1
@@ -237,22 +251,27 @@ def compute_sizing(profile: ModelProfile) -> SizingResult:
         )
     }
 
-    if profile.available_memory_gb is None:
+    if profile.total_memory_gb is None:
         tuning["ctx_size"] = (
-            "could not measure available memory on this platform -- sized to the model's own "
+            "could not measure total system memory on this platform -- sized to the model's own "
             f"trained context ({profile.n_ctx_train}) with no memory-budget check"
         )
         return SizingResult(
             ctx_size=profile.n_ctx_train, parallel=parallel, cache_type_k=None, cache_type_v=None, tuning=tuning
         )
 
-    budget_bytes = profile.available_memory_gb * (1024**3) * _MEMORY_SAFETY_FRACTION
+    # Budgeted against TOTAL installed RAM (a stable hardware fact), not a live "available now"
+    # reading -- see module docstring. The model's own resident weight footprint comes out of the
+    # same budget before anything is left for KV cache, since router mode may hold this model
+    # loaded for a long time regardless of what else the box is doing at sizing time.
+    total_budget_bytes = profile.total_memory_gb * (1024**3) * _MEMORY_BUDGET_FRACTION
+    kv_budget_bytes = total_budget_bytes - profile.model_size_bytes
 
     def max_ctx_for(cache_type_k: str, cache_type_v: str) -> int:
         bytes_per_token = _kv_cache_bytes_per_token(profile, cache_type_k, cache_type_v) * parallel
-        if bytes_per_token <= 0:
+        if bytes_per_token <= 0 or kv_budget_bytes <= 0:
             return 0
-        return int(budget_bytes // bytes_per_token)
+        return int(kv_budget_bytes // bytes_per_token)
 
     quantizable = profile.n_embd_head_k > 0 and profile.n_embd_head_k % _KV_QUANT_BLOCK_SIZE == 0
 
@@ -296,18 +315,51 @@ def compute_sizing(profile: ModelProfile) -> SizingResult:
             )
         tuning["cache_type_k"] = tuning["cache_type_v"] = reason
 
+    model_size_gb = profile.model_size_bytes / (1024**3)
     if ctx < _MIN_CTX_SIZE:
         tuning["ctx_size"] = (
-            f"memory budget only supports ~{ctx} tokens of context, below the {_MIN_CTX_SIZE} floor -- "
-            f"using the floor anyway rather than handing back something too small to be useful "
-            f"({profile.available_memory_gb:.2f}GB available, {int(_MEMORY_SAFETY_FRACTION * 100)}% budgeted)"
+            f"memory budget only supports ~{max(ctx, 0)} tokens of context after the model's own "
+            f"{model_size_gb:.2f}GB, below the {_MIN_CTX_SIZE} floor -- using the floor anyway rather "
+            f"than handing back something too small to be useful ({profile.total_memory_gb:.2f}GB total, "
+            f"{int(_MEMORY_BUDGET_FRACTION * 100)}% budgeted)"
         )
         ctx = _MIN_CTX_SIZE
     else:
         tuning["ctx_size"] = (
-            f"largest context fitting the available memory budget "
-            f"({profile.available_memory_gb:.2f}GB available, {int(_MEMORY_SAFETY_FRACTION * 100)}% budgeted), "
+            f"largest context fitting the memory budget after the model's own {model_size_gb:.2f}GB "
+            f"({profile.total_memory_gb:.2f}GB total, {int(_MEMORY_BUDGET_FRACTION * 100)}% budgeted), "
             f"capped at the model's trained context ({profile.n_ctx_train})"
         )
 
     return SizingResult(ctx_size=ctx, parallel=parallel, cache_type_k=cache_type_k, cache_type_v=cache_type_v, tuning=tuning)
+
+
+def ensure_preset(
+    server_binary: Path,
+    presets_path: Path,
+    model_id: str,
+    *,
+    model_hf: str | None = None,
+    model_path: Path | None = None,
+    gpu_layers: str | int | None = None,
+    force: bool = False,
+) -> SizingResult | None:
+    """Probes+sizes `model_id` and writes its `--models-preset` INI section, unless a section
+    already exists and `force` is False (the service-startup backfill path: fill gaps, don't
+    redo work every restart). `pull` always passes force=True -- a deliberate re-pull is a
+    reasonable time to re-size. Returns None when skipped (already present, not forced); raises
+    ModelSizingError when probing/sizing fails -- callers decide whether that's fatal to whatever
+    they're doing (see this module's docstring: it generally shouldn't be)."""
+    if not force and model_presets.has_preset(presets_path, model_id):
+        return None
+
+    profile = probe_model_profile(server_binary, model_hf=model_hf, model_path=model_path, gpu_layers=gpu_layers)
+    sizing = compute_sizing(profile)
+
+    args: dict[str, str | None] = {"ctx-size": str(sizing.ctx_size), "parallel": str(sizing.parallel)}
+    args["cache-type-k"] = sizing.cache_type_k
+    args["cache-type-v"] = sizing.cache_type_v
+    model_presets.write_preset(presets_path, model_id, args)
+    model_presets.write_tuning(presets_path, model_id, sizing.tuning)
+
+    return sizing

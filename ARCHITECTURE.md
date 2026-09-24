@@ -291,10 +291,16 @@ now:
 `aipotluck/service/llama_supervisor.py` implements `LlamaSupervisor`, used by
 `aipotluck/service/aipotluck_service.py`:
 
-- On service start, spawns `llama-server` with args built from
-  `runtime.json` (`--host`, `--port`, `--model`/`-hf`, `--ctx-size`,
-  `--gpu-layers`, `--parallel`, `--cache-type-k`/`--cache-type-v`).
-- Polls `GET /health` on llama-server every 5s (`HEALTH_POLL_INTERVAL_SECONDS`).
+- On service start, spawns `llama-server` **in router mode** (CUR-1965) with args built from
+  `runtime.json` (`--host`, `--port`, `--models-preset`, `--models-max`, `--gpu-layers`) -- no
+  `-hf`/`--model` of its own. Passing no model puts llama-server into its own native multi-model
+  router (confirmed against `vendor/llama.cpp/tools/server/server-models.cpp`): it auto-discovers
+  every model already in the HF cache and routes each request by the `"model"` field in its body,
+  loading/unloading instances on demand. This is what makes "the user switched models" something
+  llama-server itself detects and handles, not something this project intercepts or proxies. See
+  section 4.5.1 below for how a model's `ctx_size`/`parallel`/`cache_type_k`/`-v` get set.
+- Polls `GET /health` on llama-server every 5s (`HEALTH_POLL_INTERVAL_SECONDS`) -- router-level,
+  not per-model, so this stays meaningful even with zero models currently loaded.
 - On crash (process exit), restarts with exponential backoff
   (1/2/5/10/20/30/60s), resetting to the start of the schedule if the
   process had stayed up 2+ minutes (`STABLE_UPTIME_RESET_SECONDS`) --
@@ -313,13 +319,14 @@ now:
   now vs. what's actually installed. See section 3.2.1 above.
 - `GET /status` and `/capabilities` both also carry `runtime_params`
   (`diagnostics.runtime_params`, one real function, not a copy per endpoint):
-  the llama-server flags actually in effect (`ctx_size`, `parallel`,
-  `gpu_layers`, ...) plus, for anything this project computed rather than a
-  user set explicitly, a plain-sentence reason from `runtime.json`'s
-  `llama_cpp.tuning` map. `aipotluck-local-client status` prints the same
-  dict. See CLAUDE.md's "Runtime parameters" section for why this exists as
-  a standing convention, not a one-off for the ctx_size/parallel case that
-  prompted it (CUR-1965).
+  router-level params (`host`/`port`/`gpu_layers`/`models_max`) plus, per model, the
+  `ctx_size`/`parallel`/`cache_type_k`/`cache_type_v` this project computed for it and -- for each
+  of those -- a plain-sentence reason, read straight off the `--models-preset` INI file and its
+  sibling tuning JSON (`aipotluck.installer.model_presets`). Router mode means there's no single
+  "active model" to summarize -- every sized model is reported, keyed by id.
+  `aipotluck-local-client status` prints the same dict. See CLAUDE.md's "Runtime parameters"
+  section for why this exists as a standing convention, not a one-off for the ctx_size/parallel
+  case that prompted it (CUR-1965).
 
 Two-tier self-healing, confirmed by test:
 1. systemd `Restart=always` / launchd `KeepAlive` / Windows Service restarts
@@ -334,50 +341,96 @@ request, `kill -9` on the llama-server child recovered automatically
 (new pid, `restart_count` incremented, healthy again ~35s later), and
 clean shutdown terminates both processes with no orphans.
 
-### 4.5.1 Automatic runtime sizing on model switch (`aipotluck/installer/model_sizing.py`, CUR-1965)
+### 4.5.1 Router mode + automatic per-model sizing (`aipotluck/installer/model_sizing.py`/`model_presets.py`, CUR-1965)
 
-`aipotluck-local-client pull` (cli.py's `run_pull_model`) re-sizes `ctx_size`/`parallel`/
-`cache_type_k`/`cache_type_v` every time the active model changes, rather than leaving whatever
-was configured for the *previous* model in place. Two real facts drive the decision, both measured
-directly rather than guessed from the model's name or file size:
+CUR-1965 started as a single-model bug (a device silently running with 4x more KV-cache-eating
+parallel slots than a single-user box needs) and its fix evolved into a real architecture change:
+rather than this project detecting "the user switched models" itself (which would mean intercepting
+or proxying every inference request), llama-server's own **router mode** already does exactly that
+-- confirmed by reading `vendor/llama.cpp/tools/server/server-models.cpp` directly rather than
+building a proxy first and discovering this afterward. So the service runs the router
+(section 4.5), and this project's job narrows to making sure a model has a *correct* sizing preset
+waiting for it before the router ever loads it.
 
-- **The model's own hyperparameters** -- `n_ctx_train` (trained context length) and the per-layer
-  KV-cache footprint (`n_embd_k_gqa`/`n_embd_v_gqa`, `n_embd_head_k` for the quantization-block-
-  size divisibility check). Read by spawning `llama-server` a second time at a small probe context
-  (the model is already downloaded by this point, so this is a fast local load, not a repeat
-  network fetch) and parsing its own `print_info:` startup log -- the same values a real
-  `llama_model::print_info()` call prints, not re-derived from the GGUF file independently. This
-  keeps the probe in lockstep with whatever file `-hf`/`--model` actually resolved to, matching the
-  reasoning `model_pull.py`'s own docstring gives for reusing `-hf` instead of re-implementing HF's
-  quant-matching logic.
-- **Real available memory, measured with that exact model already loaded** (right before the probe
-  process is torn down) -- not idle headroom before load, and not a separately-estimated model
-  file size subtracted from it. This is the direct fix for the class of gap that produced CUR-1965
-  in the first place: a value that "just works" until the one case it doesn't, because nothing
-  measured the actual state.
+**The preset file.** `--models-preset` is an INI file (`aipotluck/installer/model_presets.py`
+owns its read/write, confirmed against `vendor/llama.cpp/common/preset.cpp`'s real PEG-grammar
+parser): one section per model, keyed by the exact `repo:quant` identity `--cache-list`/
+`model_pull.list_cached_models` already use (verified via
+`common_preset_context::load_from_cache()`, which names each cache entry the same
+`model.to_string()` call `--cache-list` prints -- so there's no separate identity-matching logic to
+get wrong). Keys are llama.cpp's own long-form CLI flag spelling with dashes stripped
+(`ctx-size`, `parallel`, `cache-type-k`, `cache-type-v`). Every other section -- another model, the
+`[*]` global section, anything a person hand-edited -- is preserved verbatim on every write (always
+read-modify-write, never regenerate-from-scratch). A sibling `<presets>.tuning.json` file (also
+`model_presets.py`) carries the `{param: "reason string"}` traceability map per model -- kept
+separate from the INI because llama-server's own preset grammar never needs to read it; it exists
+purely for `status`/`/capabilities` (section 4.5 above).
 
-The sizing math itself (`compute_sizing`): KV-cache bytes/token = `n_layer * (n_embd_k_gqa *
+**When a preset gets computed** (`model_sizing.ensure_preset`, called from three places):
+1. `aipotluck-local-client pull` (`cli.py`'s `run_pull_model`) -- always recomputes
+   (`force=True`); a deliberate re-pull is a reasonable time to re-size. After writing the preset,
+   it best-effort asks a running router to `GET /models?reload=1` (`_reload_router_models`) so the
+   new model + sizing are live immediately, rather than restarting the whole service the way
+   `login`/`logout` do -- a real UX improvement router mode makes possible, since the router
+   itself doesn't need restarting to pick up a newly-cached model.
+2. `install.py`'s `run_install`, for the default `--model-hf`/`--model-path` -- pre-fetches (HF
+   only; a `--model-path` file is already local) and pre-sizes it, so a fresh install already has
+   a correctly-sized preset waiting instead of falling back to llama-server's stock defaults until
+   the person runs `pull` themselves. `--no-model-pull` skips this for CI/dry-run contexts.
+3. `runner.py`'s `backfill_missing_presets`, once on every service start, for any cached model
+   that doesn't have a preset yet (`force=False` -- fills gaps, doesn't redo work). Recovers a
+   deleted/hand-edited-away presets file, or a model that reached the cache some other way, without
+   needing another explicit `pull`.
+
+All three call the same function, so there is exactly one place a sizing decision gets persisted --
+never three call sites each writing their own copy that could drift from the others.
+
+**The probe** (`model_sizing.probe_model_profile`): a short second `llama-server` spawn (fast --
+the model's already cached at this point, so this is a local load, not a network fetch) at a small
+probe context, just far enough to report its own hyperparameters by parsing its `print_info:`
+startup log -- the same values a real `llama_model::print_info()` call prints, not re-derived from
+the GGUF file independently. Reads `n_ctx_train` (trained context length), the per-layer KV-cache
+footprint (`n_embd_k_gqa`/`n_embd_v_gqa`, `n_embd_head_k` for the quantization-block-size
+divisibility check), and the model's own file size (`load_tensors: file size = ... MiB/GiB`, also
+parsed from the log).
+
+**The sizing math itself** (`compute_sizing`): KV-cache bytes/token = `n_layer * (n_embd_k_gqa *
 bytes_per_element(cache_type_k) + n_embd_v_gqa * bytes_per_element(cache_type_v))` -- the same
 formula CUR-1965 hand-derived and confirmed against a real device (~112 KiB/token for Llama 3.2 3B
-at f16: 28 layers, 8 KV-heads, 128 head-dim). 75% of measured available memory is budgeted as the
-usable ceiling (`_MEMORY_SAFETY_FRACTION`) -- a deliberate, openly-approximate fudge factor for the
-compute/attention scratch buffers that scale with context but aren't captured by the KV-cache
-formula alone (CUR-1965 found this gap empirically: measured headroom after a manual context-size
-fix came in tighter than a KV-only back-of-envelope estimate predicted). `parallel` is always fixed
-at `1` -- a single-user local device gets nothing from llama-server's default of 4 slots except a
-4x-smaller usable context for the same memory. KV cache type prefers `q8_0`, falling back to
-`q4_0` only when headroom is too tight for `q8_0` to reach the model's full trained context, and
-skipping quantization entirely (`cache_type_k`/`v` left `None`, llama-server's f16 default applies)
-when the model's head dimension doesn't divide evenly into the 32-element quantization block size
--- confirmed against `vendor/llama.cpp/src/llama-context.cpp`'s own startup validation, which
-refuses to start rather than silently falling back itself.
+at f16: 28 layers, 8 KV-heads, 128 head-dim). The budget is **80% of this device's TOTAL installed
+RAM** (`_MEMORY_BUDGET_FRACTION`, matching Ollama's own `freeMemory*80/100` eviction threshold),
+**not a live "available right now" reading** -- a deliberate choice: background memory headroom
+fluctuates over a device's uptime, and a value picked once from a single live snapshot would bake
+in whatever happened to be true at that moment, which is exactly the "it just works until it
+doesn't" gap CLAUDE.md's "Runtime parameters" section warns about. The model's own file size (from
+the probe) is subtracted from that budget before sizing context, since router mode may hold this
+model loaded for a long time regardless of what else the box is doing at sizing time. **Future
+improvement, deliberately not attempted here:** monitor a model's *actually observed* memory
+headroom over its running lifetime and adjust from there if it drifts from this static budget.
 
-Every decision is written into `runtime.json`'s `llama_cpp.tuning` map with a plain-sentence
-reason (see CLAUDE.md's "Runtime parameters" convention) -- never computed and left untraceable. A
-sizing failure (the probe times out, a required hparam is missing from the log, memory can't be
-measured on this platform) raises `ModelSizingError`, which `run_pull_model` catches and logs as a
-warning: the model switch itself still succeeds, and the previous ctx_size/parallel/cache_type
-values are left exactly as they were rather than being overwritten with a guess.
+`parallel` is always fixed at `1` -- a single-user local device gets nothing from llama-server's
+default of 4 slots except a 4x-smaller usable context for the same memory, and it keeps
+`--models-max 1`'s own "one model, the whole budget" assumption valid (see section 4.5.2 below --
+raising `models_max` is a real capacity tradeoff this project's memory math doesn't account for).
+KV cache type prefers `q8_0`, falling back to `q4_0` only when headroom is too tight for `q8_0` to
+reach the model's full trained context, and skipping quantization entirely (`cache_type_k`/`v`
+left unset, llama-server's f16 default applies) when the model's head dimension doesn't divide
+evenly into the 32-element quantization block size -- confirmed against
+`vendor/llama.cpp/src/llama-context.cpp`'s own startup validation, which refuses to start rather
+than silently falling back itself.
+
+A sizing failure (the probe times out, a required hparam is missing from the log, total memory
+can't be measured on this platform) raises `ModelSizingError`, which every one of the three call
+sites above catches and logs as a warning -- never fatal to the pull/install/service-start it's
+part of, and never overwrites an existing preset with a guess.
+
+### 4.5.2 `--models-max` and memory budgeting
+
+`--models-max` (default `1`, `aipotluck.service.runner.DEFAULT_MODELS_MAX`) caps how many models
+the router may hold loaded simultaneously. The sizing math in 4.5.1 above assumes *one* model gets
+the whole memory budget -- raising this is a real capacity tradeoff (multiple models sharing one
+memory budget, none of which this project currently re-sizes to account for the others being
+loaded too), not a free win, and isn't accounted for anywhere in this repo today.
 
 ## 4.6 Portability refactor: one service payload, three OS wrappers
 

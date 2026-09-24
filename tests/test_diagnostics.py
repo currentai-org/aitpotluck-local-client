@@ -57,52 +57,73 @@ def _stable_environment(monkeypatch):
 
 class TestRuntimeParams:
     """The traceability surface CLAUDE.md's "Runtime parameters" convention requires: any
-    automatically-computed runtime parameter (ctx_size/parallel, per CUR-1965's auto-sizing
-    groundwork) must be readable from one real place, not reconstructed per-consumer."""
+    automatically-computed runtime parameter (per-model ctx_size/parallel/cache_type_k/-v, per
+    CUR-1965's router-mode auto-sizing) must be readable from one real place, not reconstructed
+    per-consumer. Router mode means there's no single "active model" anymore -- this reports
+    router-level params plus every SIZED model, keyed by id, read from real files (the
+    --models-preset INI + its sibling tuning JSON) rather than pure dict logic, so real file I/O
+    is exercised here too (not mocked -- model_presets.py's own module already has that job)."""
 
-    def test_extracts_the_known_fields(self):
+    def test_extracts_router_level_fields(self):
         params = diag.runtime_params(
-            {
-                "llama_cpp": {
-                    "ctx_size": 32768,
-                    "parallel": 1,
-                    "gpu_layers": "auto",
-                    "cache_type_k": "q8_0",
-                    "cache_type_v": "q8_0",
-                    "host": "127.0.0.1",
-                    "port": 8080,
-                }
-            }
+            {"llama_cpp": {"host": "127.0.0.1", "port": 8080, "gpu_layers": "auto", "models_max": 1}}
         )
-        assert params["ctx_size"] == 32768
-        assert params["parallel"] == 1
+        assert params["host"] == "127.0.0.1"
+        assert params["port"] == 8080
         assert params["gpu_layers"] == "auto"
-        assert params["cache_type_k"] == "q8_0"
-        assert params["cache_type_v"] == "q8_0"
+        assert params["models_max"] == 1
 
     def test_missing_llama_cpp_section_is_all_nones_not_a_crash(self):
         params = diag.runtime_params({})
-        assert params["ctx_size"] is None
-        assert params["tuning"] == {}
+        assert params["host"] is None
+        assert params["models"] == {}
 
-    def test_tuning_passed_through_when_present(self):
-        params = diag.runtime_params(
-            {"llama_cpp": {"ctx_size": 32768, "tuning": {"ctx_size": "capped by available memory"}}}
+    def test_no_presets_path_means_empty_models_not_a_crash(self):
+        params = diag.runtime_params({"llama_cpp": {"host": "127.0.0.1"}})
+        assert params["models"] == {}
+
+    def test_every_sized_model_is_reported_with_its_params_and_tuning(self, tmp_path):
+        from aipotluck.installer import model_presets
+
+        presets_path = tmp_path / "presets.ini"
+        model_presets.write_preset(
+            presets_path, "org/a:Q4_K_M",
+            {"ctx-size": "16384", "parallel": "1", "cache-type-k": "q8_0", "cache-type-v": "q8_0"},
         )
-        assert params["tuning"] == {"ctx_size": "capped by available memory"}
+        model_presets.write_tuning(presets_path, "org/a:Q4_K_M", {"ctx_size": "largest context that fits"})
 
-    def test_tuning_absent_is_an_empty_dict_not_none(self):
-        # Callers (CLI, HTTP consumers) should be able to iterate this unconditionally.
-        params = diag.runtime_params({"llama_cpp": {"ctx_size": 4096}})
-        assert params["tuning"] == {}
+        params = diag.runtime_params({"llama_cpp": {"presets_path": str(presets_path)}})
 
-    def test_embedded_in_current_install_info(self):
-        fp = diag.gather_fingerprint(
-            config_dir=None,
-            runtime_config={"llama_cpp": {"ctx_size": 32768, "tuning": {"ctx_size": "auto: test reason"}}},
-        )
-        assert fp["current_install"]["runtime_params"]["ctx_size"] == 32768
-        assert fp["current_install"]["runtime_params"]["tuning"] == {"ctx_size": "auto: test reason"}
+        assert params["models"] == {
+            "org/a:Q4_K_M": {
+                "ctx_size": "16384", "parallel": "1", "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+                "tuning": {"ctx_size": "largest context that fits"},
+            }
+        }
+
+    def test_a_model_with_no_tuning_entry_gets_an_empty_dict_not_a_crash(self, tmp_path):
+        from aipotluck.installer import model_presets
+
+        presets_path = tmp_path / "presets.ini"
+        model_presets.write_preset(presets_path, "org/a:Q4_K_M", {"ctx-size": "4096"})
+
+        params = diag.runtime_params({"llama_cpp": {"presets_path": str(presets_path)}})
+
+        assert params["models"]["org/a:Q4_K_M"]["tuning"] == {}
+
+    def test_embedded_in_current_install_info(self, tmp_path):
+        from aipotluck.installer import model_presets
+
+        presets_path = tmp_path / "presets.ini"
+        model_presets.write_preset(presets_path, "org/a:Q4_K_M", {"ctx-size": "32768"})
+        model_presets.write_tuning(presets_path, "org/a:Q4_K_M", {"ctx_size": "auto: test reason"})
+
+        fp = diag.gather_fingerprint(config_dir=None, runtime_config={"llama_cpp": {"presets_path": str(presets_path)}})
+
+        assert fp["current_install"]["runtime_params"]["models"]["org/a:Q4_K_M"]["ctx_size"] == "32768"
+        assert fp["current_install"]["runtime_params"]["models"]["org/a:Q4_K_M"]["tuning"] == {
+            "ctx_size": "auto: test reason"
+        }
 
 
 class TestGatherFingerprintShape:

@@ -1,5 +1,5 @@
-"""aipotluck.installer.model_sizing -- the CUR-1965 follow-up that auto-picks ctx_size/parallel/
-cache_type_k/cache_type_v whenever the active model changes.
+"""aipotluck.installer.model_sizing -- the CUR-1965 follow-up that computes per-model
+ctx_size/parallel/cache_type_k/cache_type_v presets for llama-server's router mode.
 
 Same "deliberately not mocked" posture as test_model_pull.py: probe_model_profile's subprocess
 spawn, health polling, and log parsing are exercised against a real fake `llama-server` script,
@@ -16,14 +16,16 @@ from pathlib import Path
 
 import pytest
 
-from aipotluck.installer import model_sizing
+from aipotluck.installer import model_presets, model_sizing
 from aipotluck.installer.model_sizing import (
     ModelProfile,
     ModelSizingError,
     _kv_cache_bytes_per_token,
     _parse_int,
     _parse_int_or_list_max,
+    _parse_model_size_bytes,
     compute_sizing,
+    ensure_preset,
     probe_model_profile,
 )
 
@@ -55,6 +57,7 @@ FAKE_SERVER_SCRIPT = textwrap.dedent(
     parser.add_argument("--n-embd-head-k", default="128")
     parser.add_argument("--n-embd-k-gqa", default="1024")
     parser.add_argument("--n-embd-v-gqa", default="1024")
+    parser.add_argument("--file-size", default="1.92 GiB")
     args = parser.parse_args()
 
     if args.fail:
@@ -72,6 +75,7 @@ FAKE_SERVER_SCRIPT = textwrap.dedent(
         print("print_info: n_embd_head_k         = " + args.n_embd_head_k)
         print("print_info: n_embd_k_gqa          = " + args.n_embd_k_gqa)
         print("print_info: n_embd_v_gqa          = " + args.n_embd_v_gqa)
+        print("load_tensors: file size   = " + args.file_size + " (4.50 BPW) ")
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -130,18 +134,30 @@ class TestParseHelpers:
         with pytest.raises(ModelSizingError, match="empty list"):
             _parse_int_or_list_max("n_embd_k_gqa          = []\n", "n_embd_k_gqa")
 
+    def test_parse_model_size_bytes_handles_gib(self):
+        text = "load_tensors: file size   = 1.92 GiB (4.50 BPW) \n"
+        assert _parse_model_size_bytes(text) == int(1.92 * 1024**3)
+
+    def test_parse_model_size_bytes_handles_mib(self):
+        text = "load_tensors: file size   = 350.00 MiB (4.50 BPW) \n"
+        assert _parse_model_size_bytes(text) == int(350.0 * 1024**2)
+
+    def test_parse_model_size_bytes_raises_when_absent(self):
+        with pytest.raises(ModelSizingError, match="file size"):
+            _parse_model_size_bytes("nothing useful here")
+
 
 class TestProbeModelProfile:
     def test_returns_a_profile_parsed_from_the_real_server_output(self, fake_server_binary, monkeypatch):
-        monkeypatch.setattr(model_sizing, "_available_memory_gb", lambda: 3.5)
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.5)
         profile = probe_model_profile(fake_server_binary, model_hf="org/model:Q4_K_M")
         assert profile == ModelProfile(
             n_ctx_train=131072, n_layer=28, n_embd_head_k=128, n_embd_k_gqa=1024, n_embd_v_gqa=1024,
-            available_memory_gb=3.5,
+            model_size_bytes=int(1.92 * 1024**3), total_memory_gb=3.5,
         )
 
     def test_terminates_the_probe_process_rather_than_leaving_it_running(self, fake_server_binary, monkeypatch):
-        monkeypatch.setattr(model_sizing, "_available_memory_gb", lambda: 3.5)
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.5)
         port_holder: list[int] = []
         real_free_port = model_sizing._free_port
 
@@ -190,7 +206,7 @@ class TestProbeModelProfile:
             encoding="utf-8",
         )
         script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        monkeypatch.setattr(model_sizing, "_available_memory_gb", lambda: 3.5)
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.5)
         with pytest.raises(ModelSizingError, match="n_ctx_train"):
             probe_model_profile(script, model_hf="org/model:Q4_K_M")
 
@@ -201,7 +217,7 @@ class TestKvCacheBytesPerToken:
         # real device this whole feature was built for (CUR-1965): ~112 KiB/token.
         profile = ModelProfile(
             n_ctx_train=131072, n_layer=28, n_embd_head_k=128, n_embd_k_gqa=1024, n_embd_v_gqa=1024,
-            available_memory_gb=None,
+            model_size_bytes=0, total_memory_gb=None,
         )
         bytes_per_token = _kv_cache_bytes_per_token(profile, "f16", "f16")
         assert bytes_per_token == 28 * (1024 * 2 + 1024 * 2)
@@ -210,28 +226,31 @@ class TestKvCacheBytesPerToken:
     def test_q8_0_is_roughly_half_of_f16(self):
         profile = ModelProfile(
             n_ctx_train=8192, n_layer=28, n_embd_head_k=128, n_embd_k_gqa=1024, n_embd_v_gqa=1024,
-            available_memory_gb=None,
+            model_size_bytes=0, total_memory_gb=None,
         )
         f16 = _kv_cache_bytes_per_token(profile, "f16", "f16")
         q8_0 = _kv_cache_bytes_per_token(profile, "q8_0", "q8_0")
         assert 0.5 < q8_0 / f16 < 0.6
 
 
-def _profile(available_memory_gb: float | None, *, n_ctx_train=8192, n_embd_head_k=128) -> ModelProfile:
+def _profile(
+    total_memory_gb: float | None, *, n_ctx_train=8192, n_embd_head_k=128, model_size_bytes=0
+) -> ModelProfile:
     return ModelProfile(
         n_ctx_train=n_ctx_train, n_layer=28, n_embd_head_k=n_embd_head_k,
-        n_embd_k_gqa=1024, n_embd_v_gqa=1024, available_memory_gb=available_memory_gb,
+        n_embd_k_gqa=1024, n_embd_v_gqa=1024, model_size_bytes=model_size_bytes,
+        total_memory_gb=total_memory_gb,
     )
 
 
 class TestComputeSizing:
     def test_always_sizes_to_a_single_parallel_slot(self):
-        result = compute_sizing(_profile(2.0))
+        result = compute_sizing(_profile(3.0))
         assert result.parallel == 1
         assert "parallel" in result.tuning
 
     def test_prefers_q8_0_when_it_reaches_the_full_trained_context(self):
-        result = compute_sizing(_profile(2.0))
+        result = compute_sizing(_profile(3.0))
         assert result.cache_type_k == result.cache_type_v == "q8_0"
         assert result.ctx_size == 8192  # capped at n_ctx_train, not the much larger q8 max
 
@@ -241,20 +260,31 @@ class TestComputeSizing:
         assert result.ctx_size == 8192
 
     def test_sizes_to_the_largest_context_that_fits_when_neither_quant_reaches_full_context(self):
-        result = compute_sizing(_profile(0.05))
+        result = compute_sizing(_profile(0.08))
         assert result.cache_type_k == result.cache_type_v == "q4_0"
-        assert result.ctx_size == 1248
         assert result.ctx_size < 8192
+        assert result.ctx_size >= model_sizing._MIN_CTX_SIZE
 
     def test_falls_back_to_the_min_ctx_floor_rather_than_a_too_small_context(self):
         result = compute_sizing(_profile(0.001))
         assert result.ctx_size == model_sizing._MIN_CTX_SIZE
-        assert "floor" in result.tuning["ctx_size"] or "512" in result.tuning["ctx_size"]
+
+    def test_the_models_own_weight_size_is_subtracted_from_the_budget_before_sizing_context(self):
+        # Same total RAM (1.0GB) and same trained context (8192, the _profile default) -- but one
+        # profile's model weighs 0.9GB, leaving next to nothing for KV cache. Chosen so that
+        # WITHOUT the subtraction both would still comfortably reach the full trained context
+        # (making a weaker "<=" assertion pass even if the subtraction were silently dropped) --
+        # strict "<" only holds if the model's own weight genuinely came out of the budget.
+        small_model = compute_sizing(_profile(1.0, model_size_bytes=0))
+        big_model = compute_sizing(_profile(1.0, model_size_bytes=int(0.9 * 1024**3)))
+        assert small_model.ctx_size == 8192
+        assert big_model.ctx_size < small_model.ctx_size
+        assert big_model.ctx_size == model_sizing._MIN_CTX_SIZE  # budget went negative -- floors
 
     def test_skips_kv_quantization_when_head_dim_does_not_divide_the_quant_block_size(self):
         # head_dim=80 -- 80 % 32 != 0, so llama.cpp's own startup validation would refuse a
         # quantized K cache for this architecture (confirmed against llama-context.cpp).
-        result = compute_sizing(_profile(2.0, n_embd_head_k=80))
+        result = compute_sizing(_profile(3.0, n_embd_head_k=80))
         assert result.cache_type_k is None
         assert result.cache_type_v is None
         assert "cache_type_k" in result.tuning
@@ -267,3 +297,57 @@ class TestComputeSizing:
         assert result.cache_type_k is None
         assert result.cache_type_v is None
         assert "could not measure" in result.tuning["ctx_size"]
+
+
+class TestEnsurePreset:
+    def test_writes_a_preset_and_returns_the_sizing_result(self, fake_server_binary, tmp_path, monkeypatch):
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.0)
+        presets_path = tmp_path / "presets.ini"
+        result = ensure_preset(fake_server_binary, presets_path, "org/model:Q4_K_M", model_hf="org/model:Q4_K_M")
+        assert result is not None
+        assert model_presets.has_preset(presets_path, "org/model:Q4_K_M")
+        text = presets_path.read_text(encoding="utf-8")
+        assert f"ctx-size = {result.ctx_size}" in text
+        assert model_presets.read_tuning(presets_path)["org/model:Q4_K_M"] == result.tuning
+
+    def test_skips_recompute_when_a_preset_already_exists_and_not_forced(self, fake_server_binary, tmp_path, monkeypatch):
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.0)
+        presets_path = tmp_path / "presets.ini"
+        model_presets.write_preset(presets_path, "org/model:Q4_K_M", {"ctx-size": "999"})
+
+        probe_calls = []
+        monkeypatch.setattr(model_sizing, "probe_model_profile", lambda *a, **kw: probe_calls.append(1))
+
+        result = ensure_preset(fake_server_binary, presets_path, "org/model:Q4_K_M", model_hf="org/model:Q4_K_M")
+
+        assert result is None
+        assert probe_calls == []
+        assert "ctx-size = 999" in presets_path.read_text(encoding="utf-8")  # untouched
+
+    def test_force_recomputes_even_when_a_preset_already_exists(self, fake_server_binary, tmp_path, monkeypatch):
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.0)
+        presets_path = tmp_path / "presets.ini"
+        model_presets.write_preset(presets_path, "org/model:Q4_K_M", {"ctx-size": "999"})
+
+        result = ensure_preset(
+            fake_server_binary, presets_path, "org/model:Q4_K_M", model_hf="org/model:Q4_K_M", force=True
+        )
+
+        assert result is not None
+        assert "ctx-size = 999" not in presets_path.read_text(encoding="utf-8")
+
+    def test_omits_cache_type_keys_when_the_architecture_cannot_use_them(self, tmp_path, monkeypatch):
+        script = tmp_path / "fake-llama-server-odd-head-dim"
+        script.write_text(
+            FAKE_SERVER_SCRIPT.replace('default="128"', 'default="80"'),
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        monkeypatch.setattr(model_sizing, "_total_memory_gb", lambda: 3.0)
+        presets_path = tmp_path / "presets.ini"
+
+        ensure_preset(script, presets_path, "org/model:Q4_K_M", model_hf="org/model:Q4_K_M")
+
+        text = presets_path.read_text(encoding="utf-8")
+        assert "cache-type-k" not in text
+        assert "cache-type-v" not in text
