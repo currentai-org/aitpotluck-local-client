@@ -330,6 +330,16 @@ def run_status(_args: argparse.Namespace) -> int:
     tunnel = payload.get("tunnel")
     if tunnel:
         print(f"Tunnel:       {tunnel}")
+        # A running newt process is not the same claim as a connected tunnel -- newt retries
+        # forever on its own and never exits just because it can't reach Pangolin, so a real
+        # failure here looks exactly like success unless this is checked explicitly (confirmed
+        # live: 20+ hours of "running: true" with the tunnel never actually up).
+        if tunnel.get("running") and tunnel.get("tunnel_connected") is False:
+            print(
+                "  WARNING: newt is running but has not established a tunnel connection -- "
+                "check ~/.local/state/aipotluck/logs/newt.log for the reason (a wrong/unreachable "
+                "endpoint is the common one)"
+            )
     else:
         print("Tunnel:       " + ("not running (unexpected while logged in)" if logged_in else "stopped (logged out)"))
     return 0

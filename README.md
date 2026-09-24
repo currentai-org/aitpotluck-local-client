@@ -337,6 +337,20 @@ on PATH yet (a fresh shell hasn't picked it up, or this was a `--no-service`
 install, which skips the shim) fall back to
 `python3 -m aipotluck.installer.cli login` from this checkout.
 
+**`status`'s tunnel line distinguishes "the newt process is running" from "the tunnel is actually
+connected"** (`tunnel_connected` in its output) -- these are genuinely different claims. `newt`
+retries forever on its own and never exits just because it can't reach Pangolin, so a real
+connection failure looks identical to success under `running: true` unless this is checked
+explicitly (confirmed live: a device ran with `running: true` for 20+ hours while the tunnel was
+never actually up, because Pangolin's endpoint was pointing at an address the device couldn't
+reach). The check itself is a live read of `newt.log`'s own output
+(`aipotluck/service/newt_supervisor.py`) -- newt logs a fresh `ERROR:` line on every failed retry
+and a `"...established successfully!"` line once it actually connects, so "whichever signal
+appears most recently in the log" is a real, simple answer that process liveness alone can't give.
+`status` prints an explicit warning (and points at `newt.log`) when it sees `running: true` next
+to a confirmed-disconnected tunnel; `tunnel_connected: null` (no signal yet, e.g. right after a
+fresh start) is left alone rather than treated as a failure.
+
 ## Models: pull / list
 
 Neither the installer nor the service ever downloads model weights on their own -- the installer
@@ -415,10 +429,11 @@ lookup, `layout.py`, `cli.py` (including the argparse regression -- see `test_cl
 docstring), `cli_shim.py`, `model_pull.py`'s `pull`/`list` orchestration, `install.py`'s
 `--no-service`/source-build/binary-cache/real install paths, `service/runner.py`'s login-gating,
 `/status` secret redaction and the real-HTTP `/capabilities` route, `diagnostics.py`'s per-section
-failure isolation, and `scripts/package_custom_build.py`'s real relocatability check (a real fake
+failure isolation, `scripts/package_custom_build.py`'s real relocatability check (a real fake
 `llama-server` script, copied to a real different path and actually executed -- the same reasoning
 as `test_model_pull.py`/`test_source_build.py`'s real-subprocess tests: this check exists
-specifically to catch a failure mode a static/mocked check would miss).
+specifically to catch a failure mode a static/mocked check would miss), and
+`newt_supervisor.py`'s `tunnel_connected` log classification against real log files.
 
 Not covered: the OS-native `ServiceManager` backends themselves (`systemd.py`/`launchd.py`/
 `windows_service.py` — installing a real unit/plist/Scheduled Task), and the real download+

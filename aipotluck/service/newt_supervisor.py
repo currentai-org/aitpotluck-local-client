@@ -27,6 +27,19 @@ BACKOFF_SCHEDULE = [1, 2, 5, 10, 20, 30, 60]
 STABLE_UPTIME_RESET_SECONDS = 120
 POLL_INTERVAL_SECONDS = 5
 
+# newt's own log line for a real, successful control-channel connection -- confirmed against a
+# real Pangolin tunnel during this project's original CUR-1266 validation (see
+# aipotluck.org/pangolin/FAQ.md's e2e-test section: "look for 'Tunnel connection to server
+# established successfully!'"). newt logs a fresh "ERROR:"-prefixed line every retry for as long
+# as it's genuinely failing to connect (its own internal retry loop, independent of whether the
+# OS process itself is alive) and this text once it's genuinely connected -- so "whichever signal
+# appears LAST in the log" is a real, simple, live answer to "is the tunnel actually up", which
+# process liveness alone cannot answer: a real failure this project hit shows newt happily
+# "running" for 20+ hours while never once establishing a connection.
+_TUNNEL_CONNECTED_SIGNAL = "established successfully"
+_TUNNEL_ERROR_PREFIX = "ERROR:"
+_LOG_TAIL_BYTES = 16 * 1024
+
 
 @dataclass
 class NewtProcessInfo:
@@ -36,6 +49,11 @@ class NewtProcessInfo:
     last_exit_code: int | None = None
     last_started_at: float | None = None
     last_error: str = ""
+    # None: no signal yet (newt.log missing/empty, e.g. right after a fresh start). True/False:
+    # whichever of _TUNNEL_CONNECTED_SIGNAL / _TUNNEL_ERROR_PREFIX was logged most recently.
+    # Deliberately NOT folded into `running` -- a running-but-never-connected newt process is
+    # exactly the failure mode this field exists to make visible, not hide behind "running: true".
+    tunnel_connected: bool | None = None
 
 
 class NewtSupervisor:
@@ -86,7 +104,19 @@ class NewtSupervisor:
 
     def info(self) -> NewtProcessInfo:
         with self._lock:
-            return NewtProcessInfo(**vars(self._info))
+            info = NewtProcessInfo(**vars(self._info))
+        info.tunnel_connected = self.tunnel_connected()
+        return info
+
+    def tunnel_connected(self) -> bool | None:
+        """None if there's no log signal yet to judge by; otherwise reflects whichever of a
+        successful-connection line or an ERROR line newt logged most recently. Computed fresh
+        from the log file every call (not cached in self._info) -- it has to reflect newt's
+        CURRENT state, including a process that has been "running" for hours without ever
+        actually connecting."""
+        if not self.log_dir:
+            return None
+        return _classify_tunnel_state(_tail_log_lines(self.log_dir / "newt.log"))
 
     # -- internals --
 
@@ -213,3 +243,30 @@ class NewtSupervisor:
             self._info.last_exit_code = proc.returncode
             self._proc = None
             self._terminating = False
+
+
+def _tail_log_lines(path: Path, max_bytes: int = _LOG_TAIL_BYTES) -> list[str]:
+    """The last chunk of a log file as lines -- tolerant of it not existing yet (fresh start,
+    nothing logged) or being briefly unreadable, and deliberately bounded so this stays cheap to
+    call on every /status request even once the file has been growing for days."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            data = fh.read()
+    except OSError:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def _classify_tunnel_state(lines: list[str]) -> bool | None:
+    """Scan from the end for the first line that says anything -- the most recent signal wins,
+    since newt keeps re-logging a fresh ERROR line for as long as it's genuinely still failing to
+    connect, and only logs the success line once it actually has."""
+    for line in reversed(lines):
+        if _TUNNEL_CONNECTED_SIGNAL in line:
+            return True
+        if _TUNNEL_ERROR_PREFIX in line:
+            return False
+    return None

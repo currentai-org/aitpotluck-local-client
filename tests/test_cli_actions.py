@@ -373,6 +373,49 @@ class TestRunStatus:
         assert rc == 1
         assert any("Could not reach" in rec.message for rec in caplog.records)
 
+    def test_running_but_disconnected_tunnel_gets_an_explicit_warning(self, monkeypatch, capsys):
+        # The exact discrepancy reported live: newt "running: true" for 20+ hours while its own
+        # retry loop never once actually connected -- a plain dict print alone buries this.
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": {"pid": 456, "running": True, "tunnel_connected": False},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "newt.log" in out
+
+    def test_running_and_connected_tunnel_has_no_warning(self, monkeypatch, capsys):
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": {"pid": 456, "running": True, "tunnel_connected": True},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
+    def test_unknown_tunnel_connected_state_has_no_warning(self, monkeypatch, capsys):
+        # tunnel_connected: None (no log signal yet) must not be treated as "definitely down".
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": {"pid": 456, "running": True, "tunnel_connected": None},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
     def test_logged_in_but_llama_supervisor_errored_is_surfaced(self, monkeypatch, capsys):
         payload = {
             "logged_in": True,
