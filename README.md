@@ -77,9 +77,11 @@ curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-clie
 # advanced use only -- installer flags, passed straight through:
 curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.sh | bash -s -- --backend cuda --model-hf "org/repo:Q4_K_M"
 
-# pointing at a fork/branch instead of the default:
-AIPOTLUCK_REPO_URL=https://github.com/<owner>/<fork>.git AIPOTLUCK_REF=main \
-  curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.sh | bash
+# pointing at a fork/branch instead of the default: the env vars have to go on bash's side of the
+# pipe, not curl's -- a leading assignment on a pipeline only applies to the first command in it
+# (curl here), so putting them before curl silently does nothing (confirmed live, CUR-1965).
+curl -fsSL https://raw.githubusercontent.com/currentai-org/aitpotluck-local-client/main/install.sh | \
+  AIPOTLUCK_REPO_URL=https://github.com/<owner>/<fork>.git AIPOTLUCK_REF=main bash
 ```
 
 ```powershell
