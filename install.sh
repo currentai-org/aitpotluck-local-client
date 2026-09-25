@@ -23,6 +23,18 @@
 #   AIPOTLUCK_REF        branch/tag to check out (default: main)
 #   AIPOTLUCK_SRC_DIR     where to clone the source (default: ~/.aipotluck/src)
 #
+# IMPORTANT when setting one of these through a `curl | bash` pipe: `VAR=value curl ... | bash`
+# does NOT work -- a leading assignment on a pipeline only applies to the first command in it
+# (curl here), never to a later one (bash, which is what actually reads AIPOTLUCK_REF/etc). This
+# is silent, not an error: bash just sees the variable as unset and falls back to its default, so
+# the failure mode is "it quietly checked out main instead," not a visible one (confirmed live,
+# CUR-1965). Put the assignment on bash's side of the pipe instead, or export it beforehand:
+#
+#   curl -fsSL .../install.sh | AIPOTLUCK_REF=my-branch bash
+#   # or:
+#   export AIPOTLUCK_REF=my-branch
+#   curl -fsSL .../install.sh | bash
+#
 # Extra arguments (optional, advanced use only -- the published one-liner
 # needs none of these) are passed straight through to
 # `python3 -m aipotluck.installer.install`, e.g.:

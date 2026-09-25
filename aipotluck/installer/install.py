@@ -37,11 +37,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from aipotluck.installer import build_cache, build_strategy, fetch, layout, source_build
+from aipotluck.installer import build_cache, build_strategy, fetch, layout, model_pull, model_sizing, source_build
 from aipotluck.installer.platform_detect import HostProfile, detect_host_profile
 from aipotluck.installer.python_bootstrap import PythonNotFoundError, ensure_python
 from aipotluck.installer.service.base import ServiceState, get_service_manager
 from aipotluck.installer.cli_shim import CLI_SHIM_NAME, install_cli_shim
+from aipotluck.service.runner import DEFAULT_HOST, DEFAULT_MODELS_MAX, DEFAULT_PORT
 
 log = logging.getLogger("aipotluck.installer")
 
@@ -49,6 +50,7 @@ SERVICE_NAME = "aipotluck"
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 8080
 DEFAULT_MODEL_HF = "bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"
+PRESETS_FILENAME = "llama_presets.ini"  # lives in the per-OS config dir, alongside runtime.json
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -88,19 +90,40 @@ def build_arg_parser() -> argparse.ArgumentParser:
     model_group = parser.add_mutually_exclusive_group()
     model_group.add_argument(
         "--model-hf", default=DEFAULT_MODEL_HF,
-        help="Hugging Face repo[:quant] passed straight to llama-server's "
-             "own -hf downloader, e.g. 'bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M' "
-             f"(default: {DEFAULT_MODEL_HF} -- a small placeholder model so the "
-             "service has something to supervise out of the box; override for real use)",
+        help="Hugging Face repo[:quant] to pre-fetch and pre-size as the device's default model, "
+             "e.g. 'bartowski/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M' "
+             f"(default: {DEFAULT_MODEL_HF} -- a small placeholder model so there's something "
+             "ready out of the box; override for real use). llama-server itself runs in router "
+             "mode (CUR-1965) and can serve any model already downloaded, not only this one -- "
+             "see `pull` for downloading/sizing more later.",
     )
     model_group.add_argument(
         "--model-path", type=Path, default=None,
-        help="Path to a local GGUF file, instead of fetching from Hugging Face",
+        help="Path to a local GGUF file to pre-size as the device's default model, instead of "
+             "fetching one from Hugging Face. Its containing directory is exposed to the router "
+             "via --models-dir, since a loose local file isn't visible to the router's own "
+             "HF-cache auto-discovery.",
     )
-    parser.add_argument("--ctx-size", type=int, default=4096, help="llama-server context size (-c)")
+    parser.add_argument(
+        "--no-model-pull", action="store_true",
+        help="Skip pre-fetching/pre-sizing --model-hf at install time -- useful in CI/dry-run "
+             "contexts that don't want the network/subprocess cost. The device still ends up "
+             "with a working router; its first-ever model load just uses llama-server's own "
+             "stock defaults until you run `pull` (or restart the service once something's "
+             "cached, which backfills a preset for it -- see runner.py's own startup step).",
+    )
+    parser.add_argument(
+        "--models-max", type=int, default=DEFAULT_MODELS_MAX,
+        help=f"How many models llama-server's router may hold loaded at once (default: "
+             f"{DEFAULT_MODELS_MAX} -- keeps aipotluck.installer.model_sizing's memory budgeting, "
+             "which assumes one model at a time, valid; raising this is a real capacity tradeoff, "
+             "not a free win)",
+    )
     parser.add_argument(
         "--gpu-layers", default="auto",
-        help="llama-server -ngl value: an integer, 'auto', or 'all' (default: auto)",
+        help="llama-server -ngl value: an integer, 'auto', or 'all' (default: auto). Global -- "
+             "applies to every model the router loads, not just the default one (see "
+             "runner.build_llama_server_args' own docstring for why this one stays router-level).",
     )
     parser.add_argument("--server-host", default=DEFAULT_SERVER_HOST, help="llama-server bind host")
     parser.add_argument("--server-port", type=int, default=DEFAULT_SERVER_PORT, help="llama-server bind port")
@@ -269,6 +292,7 @@ def run_install(args: argparse.Namespace) -> int:
 
     log.info("llama-server binary: %s", server_bin)
 
+    presets_path = lay.config_dir / PRESETS_FILENAME
     runtime_config = {
         "llama_cpp": {
             "tag": manifest["tag"],
@@ -279,10 +303,10 @@ def run_install(args: argparse.Namespace) -> int:
             "lib_dir": str(server_bin.parent),
             "host": args.server_host,
             "port": args.server_port,
-            "ctx_size": args.ctx_size,
             "gpu_layers": args.gpu_layers,
-            "model_hf": args.model_hf if args.model_path is None else None,
-            "model_path": str(args.model_path) if args.model_path else None,
+            "presets_path": str(presets_path),
+            "models_dir": str(args.model_path.parent) if args.model_path else None,
+            "models_max": args.models_max,
         },
         "service": {
             "name": SERVICE_NAME,
@@ -295,6 +319,31 @@ def run_install(args: argparse.Namespace) -> int:
         # it never needs a tunnel id/secret/endpoint in hand to finish installing.
         "logged_in": False,
     }
+
+    # Pre-fetch (HF only -- a --model-path file is already local) and pre-size the default model,
+    # so a fresh install already has a correctly-sized router preset waiting rather than falling
+    # back to llama-server's stock defaults until the person runs `pull` themselves. Never fatal to
+    # the install -- the router itself works fine with zero presets, it just serves that one model
+    # unsized until backfilled (see runner.backfill_missing_presets).
+    if not args.no_model_pull:
+        model_hf = args.model_hf if args.model_path is None else None
+        model_id = model_hf if model_hf else args.model_path.name.replace(".gguf", "")
+        try:
+            if model_hf:
+                log.info("Pre-fetching the default model (%s) -- this can take a while for a large quant", model_hf)
+                model_pull.pull_model(server_bin, model_hf)
+            log.info("Sizing the default model (%s)", model_id)
+            model_sizing.ensure_preset(
+                server_bin, presets_path, model_id,
+                model_hf=model_hf, model_path=args.model_path, gpu_layers=args.gpu_layers, force=True,
+            )
+        except (model_pull.ModelPullError, model_sizing.ModelSizingError) as exc:
+            log.warning(
+                "Could not pre-fetch/size the default model (%s) -- it'll run with llama-server's "
+                "own defaults until you run `%s pull ...` or restart the service once it's cached.",
+                exc, CLI_SHIM_NAME,
+            )
+
     runtime_path = lay.config_dir / "runtime.json"
     runtime_path.write_text(json.dumps(runtime_config, indent=2), encoding="utf-8")
     log.info("Wrote runtime config: %s", runtime_path)
@@ -356,10 +405,13 @@ def _print_summary(
     print(f"Logs:           {lay.log_dir}")
     if service_status is not None:
         print(f"Service:        {service_status.state.value} ({service_status.detail})")
-        print(f"  service health:  http://127.0.0.1:8765/healthz")
-        print(f"  service status:  http://127.0.0.1:8765/status")
+        print(f"  service health:  http://{DEFAULT_HOST}:{DEFAULT_PORT}/healthz")
+        print(f"  service status:  http://{DEFAULT_HOST}:{DEFAULT_PORT}/status")
         llama = runtime_config["llama_cpp"]
-        print(f"  llama-server:    http://{llama['host']}:{llama['port']}/health (managed by the service, once logged in)")
+        print(
+            f"  llama-server (router): http://{llama['host']}:{llama['port']}/models "
+            "(managed by the service, once logged in)"
+        )
     else:
         print("Service:        not installed (--no-service)")
     if shim_path is not None:

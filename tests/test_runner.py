@@ -55,30 +55,163 @@ class TestLoadRuntimeConfig:
 
 
 class TestBuildLlamaServerArgs:
-    def test_prefers_model_path_over_model_hf(self):
-        args = runner.build_llama_server_args(
-            {"host": "127.0.0.1", "port": 8080, "model_path": "/models/x.gguf", "model_hf": "org/repo"}
-        )
-        assert "--model" in args
-        assert "/models/x.gguf" in args
-        assert "-hf" not in args
+    """Router mode (CUR-1965's follow-up): no -hf/--model/--ctx-size/--parallel/--cache-type-k/-v
+    of our own -- those are per-model now, set in the --models-preset INI file instead (see
+    test_model_presets.py/test_model_sizing.py). This just covers the router-level args."""
 
-    def test_falls_back_to_model_hf(self):
-        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "model_hf": "org/repo:Q4"})
-        assert "-hf" in args
-        assert "org/repo:Q4" in args
+    def test_host_and_port_passed_through(self):
+        args = runner.build_llama_server_args({"host": "0.0.0.0", "port": 9090})
+        assert "--host" in args and "0.0.0.0" in args
+        assert "--port" in args and "9090" in args
 
-    def test_warns_when_neither_model_given(self, caplog):
+    def test_presets_path_passed_through_when_set(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "presets_path": "/cfg/presets.ini"})
+        assert "--models-preset" in args and "/cfg/presets.ini" in args
+
+    def test_warns_when_no_presets_path_given(self, caplog):
         with caplog.at_level(logging.WARNING, logger="aipotluck.service"):
             runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080})
-        assert any("No model_path or model_hf" in rec.message for rec in caplog.records)
+        assert any("No presets_path configured" in rec.message for rec in caplog.records)
 
-    def test_ctx_size_and_gpu_layers_passed_through(self):
-        args = runner.build_llama_server_args(
-            {"host": "127.0.0.1", "port": 8080, "model_hf": "x", "ctx_size": 4096, "gpu_layers": "auto"}
-        )
-        assert "--ctx-size" in args and "4096" in args
+    def test_models_dir_passed_through_when_set(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "models_dir": "/models"})
+        assert "--models-dir" in args and "/models" in args
+
+    def test_models_dir_omitted_when_unset(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080})
+        assert "--models-dir" not in args
+
+    def test_models_max_defaults_to_one(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080})
+        idx = args.index("--models-max")
+        assert args[idx + 1] == "1"
+
+    def test_models_max_overridable(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "models_max": 3})
+        idx = args.index("--models-max")
+        assert args[idx + 1] == "3"
+
+    def test_gpu_layers_passed_through_as_the_one_global_model_arg(self):
+        # Confirmed against server-models.cpp: the router overlays its own CLI args onto every
+        # model instance, which is exactly why gpu_layers (a hardware capability, not a per-model
+        # choice) stays here rather than moving into the per-model preset.
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080, "gpu_layers": "auto"})
         assert "--gpu-layers" in args and "auto" in args
+
+    def test_gpu_layers_omitted_when_unset(self):
+        args = runner.build_llama_server_args({"host": "127.0.0.1", "port": 8080})
+        assert "--gpu-layers" not in args
+
+    def test_no_model_or_ctx_size_or_parallel_or_cache_type_flags_are_ever_emitted(self):
+        # These would be a regression back to single-model mode -- router mode must never see them.
+        args = runner.build_llama_server_args(
+            {
+                "host": "127.0.0.1", "port": 8080, "model_hf": "org/repo", "model_path": "/x.gguf",
+                "ctx_size": 4096, "parallel": 1, "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+            }
+        )
+        for flag in ("-hf", "--model", "--ctx-size", "--parallel", "--cache-type-k", "--cache-type-v"):
+            assert flag not in args, f"{flag} must not be emitted in router mode"
+
+
+class TestBackfillMissingPresets:
+    """runner.backfill_missing_presets orchestrates three independently-tested collaborators
+    (model_pull.list_cached_models, model_presets.known_model_ids, model_sizing.ensure_preset --
+    each has real-subprocess/real-file coverage of its own in test_model_pull.py/
+    test_model_presets.py/test_model_sizing.py) -- what belongs here is the orchestration logic
+    itself: which models get sized, and that this never blocks/crashes service startup."""
+
+    def test_no_op_when_server_binary_missing_from_config(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(runner.model_pull, "list_cached_models", lambda *a, **kw: calls.append(1))
+        runner.backfill_missing_presets({"presets_path": "/cfg/presets.ini"})
+        assert calls == []
+
+    def test_no_op_when_presets_path_missing_from_config(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(runner.model_pull, "list_cached_models", lambda *a, **kw: calls.append(1))
+        runner.backfill_missing_presets({"server_binary": "/fake/llama-server"})
+        assert calls == []
+
+    def test_no_op_when_nothing_is_missing(self, monkeypatch):
+        monkeypatch.setattr(runner.model_pull, "list_cached_models", lambda *a, **kw: ["org/a:Q4", "org/b:Q8"])
+        monkeypatch.setattr(runner.model_presets, "known_model_ids", lambda *a, **kw: {"org/a:Q4", "org/b:Q8"})
+        ensure_calls = []
+        monkeypatch.setattr(runner.model_sizing, "ensure_preset", lambda *a, **kw: ensure_calls.append(kw))
+        runner.backfill_missing_presets({"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini"})
+        assert ensure_calls == []
+
+    def test_sizes_every_cached_model_missing_a_preset(self, monkeypatch):
+        monkeypatch.setattr(runner.model_pull, "list_cached_models", lambda *a, **kw: ["org/a:Q4", "org/b:Q8"])
+        monkeypatch.setattr(runner.model_presets, "known_model_ids", lambda *a, **kw: set())
+        ensure_calls = []
+        monkeypatch.setattr(runner.model_sizing, "ensure_preset", lambda *a, **kw: ensure_calls.append(kw))
+        runner.backfill_missing_presets(
+            {"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini", "gpu_layers": "auto"}
+        )
+        assert {c["model_hf"] for c in ensure_calls} == {"org/a:Q4", "org/b:Q8"}
+        assert all(c["gpu_layers"] == "auto" for c in ensure_calls)
+
+    def test_a_sizing_failure_for_one_model_does_not_stop_the_rest(self, monkeypatch):
+        monkeypatch.setattr(runner.model_pull, "list_cached_models", lambda *a, **kw: ["org/bad:Q4", "org/good:Q8"])
+        monkeypatch.setattr(runner.model_presets, "known_model_ids", lambda *a, **kw: set())
+        sized = []
+
+        def fake_ensure_preset(*a, **kw):
+            if kw["model_hf"] == "org/bad:Q4":
+                raise runner.model_sizing.ModelSizingError("probe failed")
+            sized.append(kw["model_hf"])
+
+        monkeypatch.setattr(runner.model_sizing, "ensure_preset", fake_ensure_preset)
+        runner.backfill_missing_presets({"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini"})
+        assert sized == ["org/good:Q8"]
+
+    def test_list_cached_models_failure_is_a_no_op_not_a_crash(self, monkeypatch):
+        def raise_pull_error(*a, **kw):
+            raise runner.model_pull.ModelPullError("no server binary")
+
+        monkeypatch.setattr(runner.model_pull, "list_cached_models", raise_pull_error)
+        # Must not raise.
+        runner.backfill_missing_presets({"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini"})
+
+
+class TestRuntimeParamsWiring:
+    """runtime_params' own logic (field extraction, tuning passthrough) is tested where it's
+    actually defined -- test_diagnostics.py. What belongs here is proving GET /status really
+    calls the real, shared implementation (runner.py imports it from diagnostics.py rather than
+    keeping a second copy -- see CLAUDE.md's "Runtime parameters" convention for why that matters)."""
+
+    def test_result_flows_into_the_real_status_endpoint(self, tmp_path):
+        # Not mocked -- a real HTTP GET against a real running server, and a real presets INI +
+        # tuning JSON on disk, proving runtime_params is actually wired into /status end to end
+        # (router-level fields AND the per-model view it reads off disk), not just correct in
+        # isolation (test_diagnostics.py already covers runtime_params' own logic in isolation).
+        import json
+        import urllib.request
+
+        from aipotluck.installer import model_presets
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        presets_path = config_dir / "presets.ini"
+        model_presets.write_preset(presets_path, "org/repo:Q4_K_M", {"ctx-size": "16384"})
+        model_presets.write_tuning(presets_path, "org/repo:Q4_K_M", {"ctx_size": "auto: test"})
+        (config_dir / "runtime.json").write_text(
+            json.dumps({"logged_in": False, "llama_cpp": {"presets_path": str(presets_path)}}),
+            encoding="utf-8",
+        )
+        svc = runner.AipotluckServiceRunner(host="127.0.0.1", port=0, config_dir=config_dir, log_dir=None)
+        try:
+            svc.start()
+            port = svc._server.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=5) as resp:
+                body = json.loads(resp.read())
+        finally:
+            svc.stop(timeout=2)
+
+        model_params = body["runtime_params"]["models"]["org/repo:Q4_K_M"]
+        assert model_params["ctx_size"] == "16384"
+        assert model_params["tuning"] == {"ctx_size": "auto: test"}
 
 
 class TestBuildSupervisor:

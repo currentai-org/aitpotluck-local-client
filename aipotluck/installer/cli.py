@@ -18,8 +18,14 @@ Usage:
     aipotluck-local-client login --credentials-file creds.json   # or read it from a file
     aipotluck-local-client logout   # unpairs; llama-server and the tunnel stop until you log in again
     aipotluck-local-client status   # asks the running service for its login/tunnel/llama-server state
-    aipotluck-local-client pull <hf-repo[:quant]>   # download + activate a model ahead of time
+    aipotluck-local-client pull <hf-repo[:quant]>   # download + size a model ahead of time
     aipotluck-local-client list     # list models already downloaded locally
+
+llama-server itself runs in router mode (CUR-1965) -- one always-running process that serves
+whichever model an inference request's own "model" field names, loading/unloading instances on
+demand (see vendor/llama.cpp/tools/server/server-models.cpp). There's no single "active model" for
+this CLI to set anymore; `pull` just makes sure a model is downloaded and correctly sized
+(aipotluck.installer.model_sizing) before it's ever requested.
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from aipotluck.installer import layout, newt_fetch  # noqa: E402
+from aipotluck.installer import layout, model_presets, newt_fetch  # noqa: E402
 from aipotluck.installer.cli_shim import CLI_SHIM_NAME  # noqa: E402
 from aipotluck.installer.model_pull import (  # noqa: E402
     DEFAULT_TIMEOUT_SECONDS,
@@ -45,6 +51,7 @@ from aipotluck.installer.model_pull import (  # noqa: E402
     list_cached_models,
     pull_model,
 )
+from aipotluck.installer.model_sizing import ModelSizingError, ensure_preset  # noqa: E402
 from aipotluck.installer.platform_detect import HostProfile, detect_host_profile  # noqa: E402
 from aipotluck.installer.service.base import get_service_manager  # noqa: E402
 from aipotluck.service.runner import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
@@ -111,7 +118,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     pull = sub.add_parser(
         "pull", parents=[common],
-        help="Download a Hugging Face model ahead of time and make it the active model",
+        help="Download and size a Hugging Face model ahead of time (router mode serves any "
+             "downloaded model on request, so this isn't 'activating' a single one)",
     )
     pull.add_argument(
         "model",
@@ -330,17 +338,73 @@ def run_status(_args: argparse.Namespace) -> int:
     tunnel = payload.get("tunnel")
     if tunnel:
         print(f"Tunnel:       {tunnel}")
+        # A running newt process is not the same claim as a connected tunnel -- newt retries
+        # forever on its own and never exits just because it can't reach Pangolin, so a real
+        # failure here looks exactly like success unless this is checked explicitly (confirmed
+        # live: 20+ hours of "running: true" with the tunnel never actually up).
+        if tunnel.get("running") and tunnel.get("tunnel_connected") is False:
+            print(
+                "  WARNING: newt is running but has not established a tunnel connection -- "
+                "check ~/.local/state/aipotluck/logs/newt.log for the reason (a wrong/unreachable "
+                "endpoint is the common one)"
+            )
     else:
         print("Tunnel:       " + ("not running (unexpected while logged in)" if logged_in else "stopped (logged out)"))
+
+    # See CLAUDE.md's "Runtime parameters" convention: anything this project computes
+    # automatically (not just what the user passed at install time) must be traceable here, not
+    # just over HTTP -- this reads the exact same `runtime_params` GET /status already returns,
+    # never a second, potentially-drifting summary of it. Router mode (CUR-1965's follow-up) means
+    # there's no single active model to summarize -- print router-level params, then every SIZED
+    # model with its own ctx_size/parallel/cache_type and why.
+    params = payload.get("runtime_params")
+    if params:
+        router_shown = ", ".join(
+            f"{field}={params[field]}"
+            for field in ("gpu_layers", "models_max")
+            if params.get(field) is not None
+        )
+        print(f"Router params: {router_shown or '(none set)'}")
+
+        models = params.get("models") or {}
+        if not models:
+            print("Sized models: (none yet -- `pull` a model to size it)")
+        else:
+            # One line, same convention as the llama-server/Tunnel lines above -- the full
+            # per-model reasoning (the "tuning" reasons) is deliberately left out here; read it
+            # from GET /capabilities when you actually need it.
+            shown = {model_id: {k: v for k, v in mp.items() if k != "tuning"} for model_id, mp in models.items()}
+            print(f"Sized models: {shown}")
+
     return 0
 
 
+def _reload_router_models(llama_cfg: dict) -> bool:
+    """Best-effort: asks a currently-running router to re-scan the HF cache + --models-preset file
+    (`GET /models?reload=1`, confirmed against server-models.cpp) so a model `pull` just
+    downloaded/sized is visible immediately -- without this, a long-running router wouldn't notice
+    a new cache entry until its next restart, since cache scanning happens at startup/reload, not
+    per-request. Returns False (not an error -- the common case is simply "not logged in / service
+    not running right now") whenever the router can't be reached; the next service start picks up
+    everything from a full scan regardless, so nothing is lost by skipping this."""
+    host = llama_cfg.get("host", "127.0.0.1")
+    port = llama_cfg.get("port", 8080)
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/models?reload=1", timeout=5):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def run_pull_model(args: argparse.Namespace) -> int:
-    """Downloads `args.model` via llama-server's own -hf downloader (see model_pull.py), then
-    makes it the configured model for this device -- same "edit runtime.json, restart the
-    already-installed service" shape as login/logout, so a running service picks it up without a
-    separate step. Independent of login state: pulling a model doesn't need (or touch) pairing."""
-    profile, lay = _profile_and_layout(args)
+    """Downloads `args.model` via llama-server's own -hf downloader (see model_pull.py), sizes it
+    (aipotluck.installer.model_sizing -- ctx_size/parallel/cache_type_k/-v, written into the
+    router's --models-preset INI file), then asks a running router to pick both up immediately.
+    There's no "active model" to set anymore -- llama-server's router mode (CUR-1965) serves
+    whichever model a request's own "model" field names, autoloading on demand; `pull` just makes
+    sure that works well (downloaded + correctly sized) the first time it's actually requested.
+    Independent of login state: pulling a model doesn't need (or touch) pairing."""
+    _profile, lay = _profile_and_layout(args)
     runtime_path = _runtime_path(lay)
     runtime_config = _load_runtime(runtime_path)
 
@@ -354,7 +418,6 @@ def run_pull_model(args: argparse.Namespace) -> int:
         pull_model(
             Path(llama_cfg["server_binary"]),
             args.model,
-            ctx_size=llama_cfg.get("ctx_size"),
             gpu_layers=llama_cfg.get("gpu_layers"),
             timeout=args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_SECONDS,
         )
@@ -362,14 +425,41 @@ def run_pull_model(args: argparse.Namespace) -> int:
         log.error("%s", exc)
         return 1
 
-    llama_cfg["model_hf"] = args.model
-    llama_cfg["model_path"] = None
-    _save_runtime(runtime_path, runtime_config)
-    log.info("Set %s as the active model in %s", args.model, runtime_path)
+    print("Sizing runtime parameters for this model...")
+    presets_path = llama_cfg.get("presets_path")
+    if not presets_path:
+        log.warning("No presets_path configured (re-run the installer to pick this up) -- skipping sizing.")
+    else:
+        try:
+            sizing = ensure_preset(
+                Path(llama_cfg["server_binary"]), Path(presets_path), args.model,
+                model_hf=args.model, gpu_layers=llama_cfg.get("gpu_layers"), force=True,
+            )
+        except ModelSizingError as exc:
+            log.warning(
+                "Automatic runtime sizing failed (%s) -- %s will run with llama-server's own "
+                "defaults until this is retried.", exc, args.model,
+            )
+        else:
+            # ensure_preset already persisted everything (the --models-preset INI section and its
+            # sibling tuning-reasons JSON) -- nothing for this CLI to write back into runtime.json.
+            # Writing a second copy here is exactly the "second summary that could drift" CLAUDE.md's
+            # "Runtime parameters" convention warns against; diagnostics.runtime_params reads the
+            # preset files directly (see model_presets.read_all/read_tuning).
+            print(
+                f"  ctx_size={sizing.ctx_size} parallel={sizing.parallel} "
+                f"cache_type_k={sizing.cache_type_k} cache_type_v={sizing.cache_type_v}"
+            )
 
-    _restart_service(profile.os_name, args.system)
-    print()
-    print(f"{args.model} is downloaded and set as the active model.")
+    if _reload_router_models(llama_cfg):
+        print()
+        print(f"{args.model} is downloaded, sized, and live -- the router picked it up immediately.")
+    else:
+        print()
+        print(
+            f"{args.model} is downloaded and sized. The service isn't reachable right now (not "
+            "logged in, or not running) -- it'll pick this model up the next time it starts."
+        )
     return 0
 
 
@@ -396,10 +486,14 @@ def run_list_models(args: argparse.Namespace) -> int:
         print("No models cached locally yet -- pull one with `aipotluck-local-client pull <repo[:quant]>`.")
         return 0
 
-    active = llama_cfg.get("model_hf")
+    # Router mode (CUR-1965's follow-up): there's no single "active" model anymore -- any cached
+    # model can be requested at any time. "(sized)" instead marks whether `pull` (or the service's
+    # own startup backfill) has already computed a ctx_size/parallel/cache_type preset for it.
+    presets_path = llama_cfg.get("presets_path")
+    sized = model_presets.known_model_ids(Path(presets_path)) if presets_path else set()
     print(f"{len(models)} model(s) cached locally:")
     for target in models:
-        marker = "  (active)" if target == active else ""
+        marker = "  (sized)" if target in sized else ""
         print(f"  {target}{marker}")
     return 0
 

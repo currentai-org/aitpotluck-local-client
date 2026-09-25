@@ -9,6 +9,7 @@ which fetch.py's own responsibility.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -24,6 +25,22 @@ def _stable_profile(monkeypatch):
     monkeypatch.setattr(
         install, "detect_host_profile", lambda backend: HostProfile(os_name="linux", arch="x64", backend="cpu")
     )
+
+
+@pytest.fixture(autouse=True)
+def _fake_model_prefetch(monkeypatch):
+    """The default-model pre-fetch/pre-size step (CUR-1965's router-mode follow-up) is a real
+    subprocess/network boundary, same category as fetch.*/get_service_manager above -- mocked by
+    default so every other test in this file isn't incidentally exercising it against a fake,
+    non-executable placeholder binary. TestRunInstallDefaultModelSizing below un-mocks it
+    selectively to pin the actual contract."""
+    pull_calls = []
+    ensure_preset_calls = []
+    monkeypatch.setattr(install.model_pull, "pull_model", lambda *a, **kw: pull_calls.append((a, kw)))
+    monkeypatch.setattr(
+        install.model_sizing, "ensure_preset", lambda *a, **kw: ensure_preset_calls.append((a, kw))
+    )
+    return pull_calls, ensure_preset_calls
 
 
 @pytest.fixture
@@ -113,8 +130,14 @@ class TestRunInstallNoService:
         assert saved["logged_in"] is False
         assert "tunnel" not in saved
         assert saved["llama_cpp"]["server_binary"] == str(fake_fetch)
-        assert saved["llama_cpp"]["model_path"] == str(install_dir / "model.gguf")
-        assert saved["llama_cpp"]["model_hf"] is None  # model_path given -> model_hf forced None
+        # Router mode (CUR-1965): no single "active model" in runtime.json anymore -- ctx_size/
+        # model_hf/model_path all moved to being per-model, in the --models-preset INI file.
+        assert "model_hf" not in saved["llama_cpp"]
+        assert "model_path" not in saved["llama_cpp"]
+        assert "ctx_size" not in saved["llama_cpp"]
+        assert saved["llama_cpp"]["models_dir"] == str(install_dir / "model.gguf").rsplit("/", 1)[0]
+        assert saved["llama_cpp"]["presets_path"] == str(install_dir / "config" / install.PRESETS_FILENAME)
+        assert saved["llama_cpp"]["models_max"] == install.DEFAULT_MODELS_MAX
 
     def test_skips_service_and_shim(self, tmp_path, fake_fetch, monkeypatch):
         get_service_manager = MagicMock()
@@ -484,3 +507,84 @@ class TestRunInstallWithService:
         assert f"CLI:            {shim_path}" in out
         assert f"{install.CLI_SHIM_NAME} login" in out
         assert "python3 -m aipotluck.installer.cli login" not in out
+
+
+class TestRunInstallDefaultModelSizing:
+    """CUR-1965's router-mode follow-up: a fresh install pre-fetches (HF only) and pre-sizes the
+    default model, so it has a correctly-sized preset waiting rather than falling back to
+    llama-server's stock defaults until the person runs `pull`. model_pull.pull_model/
+    model_sizing.ensure_preset are mocked here too (real subprocess coverage lives in
+    test_model_pull.py/test_model_sizing.py) -- what belongs here is run_install's own wiring:
+    what gets called, with what, and that a failure here never fails the install.
+    """
+
+    def test_model_hf_default_is_pulled_then_sized(self, tmp_path, fake_fetch, _fake_model_prefetch):
+        pull_calls, ensure_preset_calls = _fake_model_prefetch
+        args = install.build_arg_parser().parse_args(
+            ["--install-dir", str(tmp_path / "install"), "--no-service", "--model-hf", "org/repo:Q4_K_M"]
+        )
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        assert len(pull_calls) == 1
+        (server_bin, hf_target), _ = pull_calls[0]
+        assert server_bin == fake_fetch
+        assert hf_target == "org/repo:Q4_K_M"
+        assert len(ensure_preset_calls) == 1
+        _, kwargs = ensure_preset_calls[0]
+        assert kwargs["model_hf"] == "org/repo:Q4_K_M"
+        assert kwargs["model_path"] is None
+        assert kwargs["force"] is True
+
+    def test_model_path_is_sized_but_never_pulled(self, tmp_path, fake_fetch, _fake_model_prefetch):
+        # A local GGUF is already on disk -- there is nothing to download.
+        pull_calls, ensure_preset_calls = _fake_model_prefetch
+        args = make_args(tmp_path / "install", ["--no-service"])  # make_args defaults to --model-path
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        assert pull_calls == []
+        assert len(ensure_preset_calls) == 1
+        _, kwargs = ensure_preset_calls[0]
+        assert kwargs["model_hf"] is None
+        assert kwargs["model_path"] == tmp_path / "install" / "model.gguf"
+
+    def test_no_model_pull_flag_skips_pre_fetch_and_sizing_entirely(self, tmp_path, fake_fetch, _fake_model_prefetch):
+        pull_calls, ensure_preset_calls = _fake_model_prefetch
+        args = make_args(tmp_path / "install", ["--no-service", "--no-model-pull"])
+
+        rc = install.run_install(args)
+
+        assert rc == 0
+        assert pull_calls == []
+        assert ensure_preset_calls == []
+
+    def test_pull_failure_does_not_fail_the_install(self, tmp_path, fake_fetch, monkeypatch, caplog):
+        def raise_pull_error(*a, **kw):
+            raise install.model_pull.ModelPullError("bad repo/quant")
+
+        monkeypatch.setattr(install.model_pull, "pull_model", raise_pull_error)
+        args = install.build_arg_parser().parse_args(
+            ["--install-dir", str(tmp_path / "install"), "--no-service", "--model-hf", "org/bad:Q4"]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="aipotluck.installer"):
+            rc = install.run_install(args)
+
+        assert rc == 0  # the install itself still succeeds
+        assert any("Could not pre-fetch/size" in rec.message for rec in caplog.records)
+
+    def test_sizing_failure_does_not_fail_the_install(self, tmp_path, fake_fetch, monkeypatch, caplog):
+        def raise_sizing_error(*a, **kw):
+            raise install.model_sizing.ModelSizingError("probe timed out")
+
+        monkeypatch.setattr(install.model_sizing, "ensure_preset", raise_sizing_error)
+        args = make_args(tmp_path / "install", ["--no-service"])
+
+        with caplog.at_level(logging.WARNING, logger="aipotluck.installer"):
+            rc = install.run_install(args)
+
+        assert rc == 0
+        assert any("Could not pre-fetch/size" in rec.message for rec in caplog.records)

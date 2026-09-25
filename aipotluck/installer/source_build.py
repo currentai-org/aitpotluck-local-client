@@ -259,6 +259,22 @@ def _available_memory_gb() -> float | None:
     return None
 
 
+def _total_memory_gb() -> float | None:
+    """Installed physical RAM -- a stable hardware fact, unlike _available_memory_gb() above,
+    which fluctuates with whatever else is running. aipotluck.installer.model_sizing budgets
+    against this deliberately, not a live "available now" snapshot -- see that module's own
+    docstring for why."""
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return kb / (1024**2)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def ensure_source_checked_out(repo_root: Path, tag: str) -> Path:
     """Point vendor/llama.cpp's submodule checkout at the pinned release tag, shallowly. Requires
     the submodule to already be initialized (README.md's documented `git clone --recurse-submodules`

@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from aipotluck.installer import cli
+from aipotluck.installer.model_sizing import SizingResult
 from aipotluck.installer.platform_detect import HostProfile
 
 
@@ -373,6 +374,132 @@ class TestRunStatus:
         assert rc == 1
         assert any("Could not reach" in rec.message for rec in caplog.records)
 
+    def test_running_but_disconnected_tunnel_gets_an_explicit_warning(self, monkeypatch, capsys):
+        # The exact discrepancy reported live: newt "running: true" for 20+ hours while its own
+        # retry loop never once actually connected -- a plain dict print alone buries this.
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": {"pid": 456, "running": True, "tunnel_connected": False},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "newt.log" in out
+
+    def test_running_and_connected_tunnel_has_no_warning(self, monkeypatch, capsys):
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": {"pid": 456, "running": True, "tunnel_connected": True},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
+    def test_unknown_tunnel_connected_state_has_no_warning(self, monkeypatch, capsys):
+        # tunnel_connected: None (no log signal yet) must not be treated as "definitely down".
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": {"pid": 456, "running": True, "tunnel_connected": None},
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
+    def test_runtime_params_are_shown(self, monkeypatch, capsys):
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": None,
+            "runtime_params": {
+                "gpu_layers": "auto", "models_max": 1,
+                "models": {"org/repo:Q4_K_M": {"ctx_size": "32768", "parallel": "1", "tuning": {}}},
+            },
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "Router params: gpu_layers=auto, models_max=1" in out
+        assert "Sized models: {'org/repo:Q4_K_M': {'ctx_size': '32768', 'parallel': '1'}}" in out
+
+    def test_sized_models_is_exactly_one_line_per_the_tunnel_status_convention(self, monkeypatch, capsys):
+        # Same terse "one line, raw dict" shape as the llama-server/Tunnel lines above it --
+        # multiple models must never spill onto their own separate lines.
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": None,
+            "runtime_params": {
+                "gpu_layers": "auto", "models_max": 1,
+                "models": {
+                    "org/a:Q4_K_M": {"ctx_size": "8192", "parallel": "1", "tuning": {}},
+                    "org/b:Q8_0": {"ctx_size": "4096", "parallel": "1", "tuning": {}},
+                },
+            },
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        sized_lines = [line for line in out.splitlines() if line.startswith("Sized models")]
+        assert len(sized_lines) == 1
+        assert "org/a:Q4_K_M" in sized_lines[0] and "org/b:Q8_0" in sized_lines[0]
+
+    def test_tuning_reasons_are_omitted_from_status_output(self, monkeypatch, capsys):
+        # The CLI's `status` is deliberately terse (one line, like the Tunnel/llama-server lines
+        # above it) -- the per-field "why" reasoning is real and useful, but belongs in
+        # GET /capabilities, not in a quick-glance status line.
+        payload = {
+            "logged_in": True,
+            "llama_server": {"pid": 1, "running": True},
+            "tunnel": None,
+            "runtime_params": {
+                "gpu_layers": None, "models_max": 1,
+                "models": {
+                    "org/repo:Q4_K_M": {
+                        "ctx_size": "32768", "parallel": "1",
+                        "tuning": {
+                            "ctx_size": "capped by available memory",
+                            "parallel": "reduced from the default to maximize single-request context",
+                        },
+                    }
+                },
+            },
+        }
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        cli.run_status(None)
+
+        out = capsys.readouterr().out
+        assert "capped by available memory" not in out
+        assert "reduced from the default to maximize single-request context" not in out
+        assert "tuning" not in out
+
+    def test_runtime_params_absent_prints_nothing(self, monkeypatch, capsys):
+        # Old service builds predating runtime_params -- must not crash on a missing key.
+        payload = {"logged_in": True, "llama_server": {"pid": 1, "running": True}, "tunnel": None}
+        monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _FakeHttpResponse(payload))
+
+        rc = cli.run_status(None)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Runtime params" not in out
+
     def test_logged_in_but_llama_supervisor_errored_is_surfaced(self, monkeypatch, capsys):
         payload = {
             "logged_in": True,
@@ -393,34 +520,106 @@ def make_pull_args(install_dir: Path, model: str = "org/repo:Q4_K_M", timeout=No
     return Namespace(**defaults)
 
 
+_FAKE_SIZING = SizingResult(
+    ctx_size=16384, parallel=1, cache_type_k="q8_0", cache_type_v="q8_0",
+    tuning={"ctx_size": "test reason"},
+)
+
+
+class TestReloadRouterModels:
+    """Real HTTP throughout -- a small stand-in HTTP server plays the router, so this proves the
+    actual request cli.py sends (path/query), not just that some call happened."""
+
+    def test_hits_models_reload_on_the_configured_host_and_port(self):
+        import socket
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen_paths = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen_paths.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        server = HTTPServer(("127.0.0.1", port), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = cli._reload_router_models({"host": "127.0.0.1", "port": port})
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+        assert result is True
+        assert seen_paths == ["/models?reload=1"]
+
+    def test_returns_false_rather_than_raising_when_nothing_is_listening(self):
+        # An unbound ephemeral port -- guaranteed connection-refused, the realistic "not logged in
+        # / service not running" case.
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        assert cli._reload_router_models({"host": "127.0.0.1", "port": port}) is False
+
+    def test_defaults_to_localhost_8080_when_unset(self, monkeypatch):
+        # Must not raise with an empty llama_cfg -- falls back to llama-server's own conventional
+        # default host/port rather than crashing on a missing key.
+        seen_urls = []
+
+        def fake_urlopen(url, timeout):
+            seen_urls.append(url)
+            return _FakeHttpResponse({})
+
+        monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+        assert cli._reload_router_models({}) is True
+        assert seen_urls == ["http://127.0.0.1:8080/models?reload=1"]
+
+
 class TestRunPullModel:
-    def test_success_activates_the_pulled_model_and_restarts_the_service(
-        self, tmp_path, fake_service_manager, monkeypatch
-    ):
+    """Router mode (CUR-1965's follow-up): there's no "active model" to write into runtime.json
+    anymore -- pull downloads a model, sizes it (model_sizing.ensure_preset persists the
+    --models-preset INI section + its tuning-reasons sidecar on its own, see
+    test_model_sizing.py/test_model_presets.py for that), then best-effort asks a running router
+    to reload rather than restarting the whole service."""
+
+    def test_success_pulls_sizes_and_reloads_the_router(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "install"
-        runtime_path = write_runtime(
+        write_runtime(
             install_dir,
-            {
-                "llama_cpp": {"server_binary": "/fake/llama-server", "model_hf": "old/model", "model_path": None},
-                "service": {},
-                "logged_in": True,
-            },
+            {"llama_cpp": {"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini"}, "service": {}},
         )
         pull_calls = []
         monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: pull_calls.append((a, kw)))
+        ensure_preset_calls = []
+        monkeypatch.setattr(cli, "ensure_preset", lambda *a, **kw: ensure_preset_calls.append((a, kw)) or _FAKE_SIZING)
+        reload_calls = []
+        monkeypatch.setattr(cli, "_reload_router_models", lambda llama_cfg: reload_calls.append(1) or True)
         args = make_pull_args(install_dir, model="new/model:Q8_0")
 
         rc = cli.run_pull_model(args)
 
         assert rc == 0
         assert len(pull_calls) == 1
-        saved = json.loads(runtime_path.read_text())
-        assert saved["llama_cpp"]["model_hf"] == "new/model:Q8_0"
-        assert saved["llama_cpp"]["model_path"] is None
-        fake_service_manager.stop.assert_called_once()
-        fake_service_manager.start.assert_called_once()
+        assert pull_calls[0][0] == (Path("/fake/llama-server"), "new/model:Q8_0")
+        assert len(ensure_preset_calls) == 1
+        _, kwargs = ensure_preset_calls[0]
+        assert kwargs["model_hf"] == "new/model:Q8_0"
+        assert kwargs["force"] is True
+        assert reload_calls == [1]
 
-    def test_missing_llama_cpp_install_is_rejected_before_pulling(self, tmp_path, fake_service_manager, monkeypatch):
+    def test_missing_llama_cpp_install_is_rejected_before_pulling(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "install"
         write_runtime(install_dir, {"service": {}, "logged_in": False})  # no llama_cpp section at all
         pull_calls = []
@@ -431,75 +630,140 @@ class TestRunPullModel:
 
         assert rc == 1
         assert pull_calls == []
-        fake_service_manager.stop.assert_not_called()
 
-    def test_pull_failure_does_not_change_runtime_json(self, tmp_path, fake_service_manager, monkeypatch):
+    def test_pull_failure_skips_sizing_entirely(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "install"
-        runtime_path = write_runtime(
-            install_dir,
-            {"llama_cpp": {"server_binary": "/fake/llama-server", "model_hf": "old/model"}, "service": {}},
+        write_runtime(
+            install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}}
         )
-        original = runtime_path.read_text()
 
         def raise_pull_error(*a, **kw):
             raise cli.ModelPullError("bad repo/quant")
 
         monkeypatch.setattr(cli, "pull_model", raise_pull_error)
+        ensure_preset_calls = []
+        monkeypatch.setattr(cli, "ensure_preset", lambda *a, **kw: ensure_preset_calls.append(1))
         args = make_pull_args(install_dir, model="bad/repo")
 
         rc = cli.run_pull_model(args)
 
         assert rc == 1
-        assert runtime_path.read_text() == original  # unchanged -- a failed pull activates nothing
-        fake_service_manager.stop.assert_not_called()
+        assert ensure_preset_calls == []
 
-    def test_default_timeout_used_when_not_given(self, tmp_path, fake_service_manager, monkeypatch):
+    def test_default_timeout_used_when_not_given(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "install"
         write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
         seen_kwargs = {}
         monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: seen_kwargs.update(kw))
+        monkeypatch.setattr(cli, "ensure_preset", lambda *a, **kw: _FAKE_SIZING)
         args = make_pull_args(install_dir, timeout=None)
 
         cli.run_pull_model(args)
 
         assert seen_kwargs["timeout"] == cli.DEFAULT_TIMEOUT_SECONDS
 
-    def test_custom_timeout_passed_through(self, tmp_path, fake_service_manager, monkeypatch):
+    def test_custom_timeout_passed_through(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "install"
         write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
         seen_kwargs = {}
         monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: seen_kwargs.update(kw))
+        monkeypatch.setattr(cli, "ensure_preset", lambda *a, **kw: _FAKE_SIZING)
         args = make_pull_args(install_dir, timeout=45.0)
 
         cli.run_pull_model(args)
 
         assert seen_kwargs["timeout"] == 45.0
 
-    def test_ctx_size_and_gpu_layers_forwarded_from_existing_config(self, tmp_path, fake_service_manager, monkeypatch):
+    def test_gpu_layers_forwarded_to_both_pull_and_sizing(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "install"
         write_runtime(
             install_dir,
             {
-                "llama_cpp": {"server_binary": "/fake/llama-server", "ctx_size": 8192, "gpu_layers": "all"},
+                "llama_cpp": {
+                    "server_binary": "/fake/llama-server", "gpu_layers": "all", "presets_path": "/cfg/presets.ini",
+                },
                 "service": {},
             },
         )
-        seen_kwargs = {}
-        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: seen_kwargs.update(kw))
+        pull_kwargs = {}
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: pull_kwargs.update(kw))
+        ensure_preset_kwargs = {}
+        monkeypatch.setattr(
+            cli, "ensure_preset", lambda *a, **kw: ensure_preset_kwargs.update(kw) or _FAKE_SIZING
+        )
         args = make_pull_args(install_dir)
 
         cli.run_pull_model(args)
 
-        assert seen_kwargs["ctx_size"] == 8192
-        assert seen_kwargs["gpu_layers"] == "all"
+        assert pull_kwargs["gpu_layers"] == "all"
+        assert ensure_preset_kwargs["gpu_layers"] == "all"
 
+    def test_no_presets_path_skips_sizing_but_still_succeeds(self, tmp_path, monkeypatch, caplog):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: None)
+        ensure_preset_calls = []
+        monkeypatch.setattr(cli, "ensure_preset", lambda *a, **kw: ensure_preset_calls.append(1))
+        args = make_pull_args(install_dir)
 
-class TestRunListModels:
-    def test_lists_cached_models_and_marks_the_active_one(self, tmp_path, monkeypatch, capsys):
+        with caplog.at_level(logging.WARNING, logger="aipotluck.cli"):
+            rc = cli.run_pull_model(args)
+
+        assert rc == 0
+        assert ensure_preset_calls == []
+        assert any("No presets_path configured" in rec.message for rec in caplog.records)
+
+    def test_sizing_failure_does_not_fail_the_pull(self, tmp_path, monkeypatch, caplog):
+        # A nice-to-have auto-tune layer failing (e.g. the probe times out, or this platform can't
+        # measure memory) must not block the actual model switch -- the pull already succeeded.
         install_dir = tmp_path / "install"
         write_runtime(
             install_dir,
-            {"llama_cpp": {"server_binary": "/fake/llama-server", "model_hf": "org/repo:Q4_K_M"}, "service": {}},
+            {"llama_cpp": {"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini"}, "service": {}},
+        )
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: None)
+
+        def raise_sizing_error(*a, **kw):
+            raise cli.ModelSizingError("probe timed out")
+
+        monkeypatch.setattr(cli, "ensure_preset", raise_sizing_error)
+        args = make_pull_args(install_dir, model="new/model:Q8_0")
+
+        with caplog.at_level(logging.WARNING, logger="aipotluck.cli"):
+            rc = cli.run_pull_model(args)
+
+        assert rc == 0  # the pull itself still succeeds
+        assert any("Automatic runtime sizing failed" in rec.message for rec in caplog.records)
+
+    def test_reload_failure_still_reports_success_with_a_different_message(self, tmp_path, monkeypatch, capsys):
+        install_dir = tmp_path / "install"
+        write_runtime(
+            install_dir,
+            {"llama_cpp": {"server_binary": "/fake/llama-server", "presets_path": "/cfg/presets.ini"}, "service": {}},
+        )
+        monkeypatch.setattr(cli, "pull_model", lambda *a, **kw: None)
+        monkeypatch.setattr(cli, "ensure_preset", lambda *a, **kw: _FAKE_SIZING)
+        monkeypatch.setattr(cli, "_reload_router_models", lambda llama_cfg: False)
+        args = make_pull_args(install_dir)
+
+        rc = cli.run_pull_model(args)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "next time it starts" in out
+
+
+class TestRunListModels:
+    def test_lists_cached_models_and_marks_the_sized_one(self, tmp_path, monkeypatch, capsys):
+        install_dir = tmp_path / "install"
+        presets_path = tmp_path / "presets.ini"
+        cli.model_presets.write_preset(presets_path, "org/repo:Q4_K_M", {"ctx-size": "4096"})
+        write_runtime(
+            install_dir,
+            {
+                "llama_cpp": {"server_binary": "/fake/llama-server", "presets_path": str(presets_path)},
+                "service": {},
+            },
         )
         monkeypatch.setattr(cli, "list_cached_models", lambda binary: ["org/repo:Q4_K_M", "org/other:Q8_0"])
         args = make_pull_args(install_dir)
@@ -509,9 +773,21 @@ class TestRunListModels:
         out = capsys.readouterr().out
         assert rc == 0
         assert "2 model(s) cached locally" in out
-        assert "org/repo:Q4_K_M  (active)" in out
+        assert "org/repo:Q4_K_M  (sized)" in out
         assert "org/other:Q8_0" in out
-        assert "org/other:Q8_0  (active)" not in out
+        assert "org/other:Q8_0  (sized)" not in out
+
+    def test_no_presets_path_marks_nothing_sized(self, tmp_path, monkeypatch, capsys):
+        install_dir = tmp_path / "install"
+        write_runtime(install_dir, {"llama_cpp": {"server_binary": "/fake/llama-server"}, "service": {}})
+        monkeypatch.setattr(cli, "list_cached_models", lambda binary: ["org/repo:Q4_K_M"])
+        args = make_pull_args(install_dir)
+
+        rc = cli.run_list_models(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "(sized)" not in out
 
     def test_no_cached_models_suggests_pull(self, tmp_path, monkeypatch, capsys):
         install_dir = tmp_path / "install"

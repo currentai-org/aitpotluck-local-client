@@ -39,12 +39,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from aipotluck import diagnostics  # noqa: E402
+from aipotluck.diagnostics import runtime_params  # noqa: E402, F401 -- re-exported, see below
+from aipotluck.installer import model_pull, model_presets, model_sizing  # noqa: E402
 from aipotluck.service.llama_supervisor import LlamaSupervisor  # noqa: E402
 from aipotluck.service.newt_supervisor import NewtSupervisor  # noqa: E402
 
 SERVICE_NAME = "aipotluck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8069  # distinct from llama-server's own default port 8080
+DEFAULT_MODELS_MAX = 1  # see runner.py's build_llama_server_args and CLAUDE.md; one model loaded
+                         # at a time keeps aipotluck.installer.model_sizing's "all budget, one
+                         # model" memory math valid -- see that module's own docstring for why
+                         # multi-model concurrency is deliberately not attempted yet.
 
 log = logging.getLogger("aipotluck.service")
 
@@ -62,21 +68,39 @@ def load_runtime_config(config_dir: Path) -> dict:
 
 
 def build_llama_server_args(llama_cfg: dict) -> list[str]:
+    """Router mode (CUR-1965's follow-up): deliberately no `-hf`/`--model`/`--ctx-size`/
+    `--parallel`/`--cache-type-k`/`-v` of our own. Passing no model at all puts llama-server into
+    its own native multi-model router (confirmed against
+    vendor/llama.cpp/tools/server/server-models.cpp): it auto-discovers every model already in the
+    HF cache and routes each request by the `"model"` field in its body, loading/unloading
+    instances on demand -- this is what makes "the user switched models" something llama-server
+    itself detects and handles, not something this project has to intercept or proxy. Per-model
+    ctx-size/parallel/cache-type-k/-v instead live in the `--models-preset` INI file
+    (aipotluck.installer.model_presets/model_sizing write it), since the router applies those
+    per model, not once globally."""
     args = ["--host", str(llama_cfg.get("host", "127.0.0.1")), "--port", str(llama_cfg.get("port", 8080))]
 
-    model_path = llama_cfg.get("model_path")
-    model_hf = llama_cfg.get("model_hf")
-    if model_path:
-        args += ["--model", str(model_path)]
-    elif model_hf:
-        args += ["-hf", str(model_hf)]
+    presets_path = llama_cfg.get("presets_path")
+    if presets_path:
+        args += ["--models-preset", str(presets_path)]
     else:
-        log.warning("No model_path or model_hf configured; llama-server will fail to start without a model")
+        log.warning("No presets_path configured; llama-server's router will use its own defaults for every model")
 
-    ctx_size = llama_cfg.get("ctx_size")
-    if ctx_size:
-        args += ["--ctx-size", str(ctx_size)]
+    # Only set for a --model-path install: a local GGUF outside the HF cache is invisible to the
+    # router's own cache auto-discovery, so it needs this second, explicit source (confirmed
+    # against common_preset_context::load_from_models_dir -- a loose *.gguf directly in this
+    # directory is routed under its filename minus ".gguf", which is exactly the id
+    # model_sizing.ensure_preset is given for it at install time).
+    models_dir = llama_cfg.get("models_dir")
+    if models_dir:
+        args += ["--models-dir", str(models_dir)]
 
+    args += ["--models-max", str(llama_cfg.get("models_max", DEFAULT_MODELS_MAX))]
+
+    # Global -- overlaid onto every model instance's own args by the router (confirmed against
+    # server-models.cpp), so this is the one llama-server flag that still belongs at the router
+    # level rather than per-model: it's a hardware capability (how many layers this box's GPU
+    # backend can hold), not something that varies by which model is currently loaded.
     gpu_layers = llama_cfg.get("gpu_layers")
     if gpu_layers is not None:
         args += ["--gpu-layers", str(gpu_layers)]
@@ -102,6 +126,42 @@ def build_supervisor(runtime_config: dict, log_dir: Path | None) -> LlamaSupervi
         port=llama_cfg.get("port", 8080),
         log_dir=log_dir,
     )
+
+
+def backfill_missing_presets(llama_cfg: dict) -> None:
+    """Called once on service start, before the router is spawned: ensures every model already in
+    the HF cache has a `--models-preset` section (CUR-1965's "on pull OR on startup if it's found
+    to be missing"). In the common case (every model was sized by `pull`, which always writes one)
+    this is a cheap no-op -- one `--cache-list` call plus one INI read. It only does real work to
+    recover from a deleted/hand-edited-away presets file, or a model that reached the cache some
+    other way. Never raises -- a sizing failure here must not stop the service from starting;
+    llama-server's router falls back to its own defaults for any model with no preset section."""
+    server_binary_str = llama_cfg.get("server_binary")
+    presets_path_str = llama_cfg.get("presets_path")
+    if not server_binary_str or not presets_path_str:
+        return
+    server_binary = Path(server_binary_str)
+    presets_path = Path(presets_path_str)
+
+    try:
+        cached = model_pull.list_cached_models(server_binary)
+    except model_pull.ModelPullError as exc:
+        log.warning("Could not list cached models for preset backfill: %s", exc)
+        return
+
+    known = model_presets.known_model_ids(presets_path)
+    missing = [model_id for model_id in cached if model_id not in known]
+    if not missing:
+        return
+
+    log.info("Backfilling missing runtime-sizing presets for %d cached model(s): %s", len(missing), missing)
+    for model_id in missing:
+        try:
+            model_sizing.ensure_preset(
+                server_binary, presets_path, model_id, model_hf=model_id, gpu_layers=llama_cfg.get("gpu_layers")
+            )
+        except model_sizing.ModelSizingError as exc:
+            log.warning("Could not size cached model %r (%s) -- it will use llama-server's own defaults", model_id, exc)
 
 
 def build_newt_supervisor(runtime_config: dict, log_dir: Path | None) -> NewtSupervisor | None:
@@ -180,6 +240,7 @@ class _StatusHandler(BaseHTTPRequestHandler):
                     "status": "running",
                     "logged_in": logged_in,
                     "runtime_config": self._redacted_runtime_config(self.runner.runtime_config),
+                    "runtime_params": runtime_params(self.runner.runtime_config),
                     "llama_server": llama_info,
                     "tunnel": tunnel_info,
                 }
@@ -232,6 +293,9 @@ class AipotluckServiceRunner:
         # `aipotluck-local-client login` flips this and restarts the service. This is what lets the public
         # one-line installer take zero arguments: it never needs credentials in hand to finish.
         if self.runtime_config.get("logged_in"):
+            llama_cfg = self.runtime_config.get("llama_cpp") or {}
+            backfill_missing_presets(llama_cfg)
+
             self.supervisor = build_supervisor(self.runtime_config, self.log_dir)
             if self.supervisor:
                 log.info("Starting llama-server supervisor")
